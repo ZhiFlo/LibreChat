@@ -1135,6 +1135,8 @@
   "com_ui_approval_error": "Something went wrong submitting your decision. Please try again.",
   "com_ui_approval_expired": "This request expired or was already handled.",
   "com_ui_approve": "Approve",
+  "com_ui_approve_always": "Always allow",
+  "com_ui_approve_always_hint": "This tool will run without asking for the rest of this conversation.",
   "com_ui_archive": "Archive",
   "com_ui_archive_all_error": "Failed to archive all chats",
   "com_ui_archive_all_success": "All chats archived",
