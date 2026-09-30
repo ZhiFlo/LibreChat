@@ -1369,6 +1369,20 @@ export const agentsEndpointSchema = baseEndpointSchema
           timeoutMs: z.number().int().min(100).max(30_000).optional().default(2000),
         })
         .optional(),
+      /** Budget and cache configuration for resolving an agent's linked prompt-group
+       * instructions. Omitting the block applies the defaults below. */
+      linkedInstructions: z
+        .object({
+          timeoutMs: z.number().int().min(100).max(30_000).optional().default(2000),
+          native: z
+            .object({
+              /** Content cache TTL for a resolved native prompt link; `0` disables the cache. */
+              cacheTtlMs: z.number().int().min(0).max(3_600_000).optional().default(300_000),
+            })
+            .optional()
+            .default({}),
+        })
+        .optional(),
       maxRecursionLimit: z.number().optional(),
       /** Max cumulative bytes a single streamed tool call's arguments may reach before the run
        * aborts. Defaults to 64 KiB in the agents SDK; `0` disables the guard. */
@@ -3710,6 +3724,10 @@ export enum CacheKeys {
    * Key for cached prompt group access ID sets (accessible, public, owned).
    */
   PROMPT_GROUPS_ACCESS = 'PROMPT_GROUPS_ACCESS',
+  /**
+   * Key for cached resolved content of an agent's linked native prompt-group instructions.
+   */
+  AGENT_LINKED_INSTRUCTIONS = 'AGENT_LINKED_INSTRUCTIONS',
   /**
    * Key for per-conversation stateful code sandbox prewarm/warm state.
    */

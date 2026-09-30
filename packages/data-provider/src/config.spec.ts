@@ -120,6 +120,31 @@ describe('repository instruction configuration', () => {
   });
 });
 
+describe('linked instructions configuration', () => {
+  it('defaults optional reads and the native cache TTL, and bounds operator overrides', () => {
+    expect(agentsEndpointSchema.parse({}).linkedInstructions).toBeUndefined();
+    expect(agentsEndpointSchema.parse({ linkedInstructions: {} }).linkedInstructions).toEqual({
+      timeoutMs: 2000,
+      native: { cacheTtlMs: 300_000 },
+    });
+    expect(
+      agentsEndpointSchema.parse({
+        linkedInstructions: { timeoutMs: 5000, native: { cacheTtlMs: 0 } },
+      }).linkedInstructions,
+    ).toEqual({ timeoutMs: 5000, native: { cacheTtlMs: 0 } });
+    for (const timeoutMs of [0, 99, 30_001, 1.5]) {
+      expect(agentsEndpointSchema.safeParse({ linkedInstructions: { timeoutMs } }).success).toBe(
+        false,
+      );
+    }
+    for (const cacheTtlMs of [-1, 3_600_001, 1.5]) {
+      expect(
+        agentsEndpointSchema.safeParse({ linkedInstructions: { native: { cacheTtlMs } } }).success,
+      ).toBe(false);
+    }
+  });
+});
+
 describe('ask user retained answers', () => {
   it('leaves the block unconfigured by default and accepts an operator budget', () => {
     expect(agentsEndpointSchema.parse({}).askUserQuestion).toBeUndefined();
