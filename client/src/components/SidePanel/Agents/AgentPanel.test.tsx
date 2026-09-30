@@ -759,5 +759,76 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
         });
       });
     });
+
+    describe('instructionsPromptChanged', () => {
+      const link = {
+        source: 'native' as const,
+        groupId: 'group_1',
+        selection: { type: 'production' as const },
+      };
+
+      it('omits instructionsPrompt from a later unrelated save after a prompt link was saved', async () => {
+        /** `AgentSelect`'s post-save `reset(..., { keepDirtyValues: true })` can leave
+         *  `dirtyFields.instructionsPrompt` true even once the field's value matches what
+         *  was just persisted. This harness never calls that `reset` at all (`AgentSelect`
+         *  is mocked out above), which reproduces the same end state by construction: once
+         *  `setValue(..., { shouldDirty: true })` marks the field dirty, nothing clears it
+         *  between the two submits below. A fix that still read `dirtyFields` here would
+         *  resend the link on the second, unrelated save. */
+        const { mockUseGetAgentByIdQuery, mockUpdateAgent } = setupMocks();
+
+        mockAgentQuery(mockUseGetAgentByIdQuery, {
+          name: 'Test Agent',
+          version: 2,
+          instructionsPrompt: null,
+        });
+        mockFormDefaults = { instructionsSource: 'inline', instructionsPrompt: null };
+
+        mockUpdateAgent.mockResolvedValueOnce(
+          createMockAgent({ name: 'Test Agent', version: 2, instructionsPrompt: link }),
+        );
+
+        const Wrapper = createWrapper();
+        const { container } = render(<AgentPanel />, { wrapper: Wrapper });
+
+        act(() => {
+          capturedFormMethods!.setValue('instructionsSource', 'prompt', { shouldDirty: true });
+          capturedFormMethods!.setValue('instructionsPrompt', link, { shouldDirty: true });
+        });
+
+        fireEvent.submit(container.querySelector('form')!);
+        await act(async () => {
+          mockFormSubmitHandler?.();
+        });
+
+        await waitFor(() => expect(mockUpdateAgent).toHaveBeenCalledTimes(1));
+        expect(mockUpdateAgent.mock.calls[0][0].data).toHaveProperty('instructionsPrompt', link);
+
+        /** Mirrors what the real cache write in `mutations.ts` produces after the save: the
+         *  query the panel reads now reflects the link that was just persisted. The mock
+         *  hook only returns this on its next call, which the `setValue` below triggers. */
+        mockAgentQuery(mockUseGetAgentByIdQuery, {
+          name: 'Test Agent',
+          version: 2,
+          instructionsPrompt: link,
+        });
+
+        mockUpdateAgent.mockResolvedValueOnce(
+          createMockAgent({ name: 'Renamed Agent', version: 2, instructionsPrompt: link }),
+        );
+
+        act(() => {
+          capturedFormMethods!.setValue('name', 'Renamed Agent', { shouldDirty: true });
+        });
+
+        fireEvent.submit(container.querySelector('form')!);
+        await act(async () => {
+          mockFormSubmitHandler?.();
+        });
+
+        await waitFor(() => expect(mockUpdateAgent).toHaveBeenCalledTimes(2));
+        expect(mockUpdateAgent.mock.calls[1][0].data).not.toHaveProperty('instructionsPrompt');
+      });
+    });
   });
 });

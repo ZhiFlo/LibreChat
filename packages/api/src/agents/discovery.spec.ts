@@ -345,7 +345,9 @@ describe('discoverConnectedAgents', () => {
   it('forwards resolveLinkedInstructions and recordLinkedPromptUsage to every handoff initializeAgent call', async () => {
     const primaryConfig = makeConfig('A', [{ from: 'A', to: 'B', edgeType: 'handoff' }]);
     const getAgent = jest.fn(async () => makeAgent('B', []));
-    const resolveLinkedInstructions = jest.fn();
+    // `ResolveLinkedInstructions` also carries a `recordUse` method (see
+    // `./instructions/linked`); a bare `jest.fn()` lacks it.
+    const resolveLinkedInstructions = Object.assign(jest.fn(), { recordUse: jest.fn() });
 
     await discoverConnectedAgents(
       {

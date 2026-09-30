@@ -205,6 +205,39 @@ export function composeAgentUpdatePayload(
   } as const;
 }
 
+/**
+ * Resolves the linked-prompt value a submission would actually send: `null` in
+ * inline mode or for a restricted stub, otherwise the link. Mirrors
+ * `resolvedInstructionsPrompt` in `composeAgentUpdatePayload`, so callers on both
+ * sides of an equality check agree on what "no editable link" means.
+ */
+const resolveInstructionsPromptLink = (
+  source: AgentForm['instructionsSource'],
+  prompt: AgentForm['instructionsPrompt'],
+): AgentForm['instructionsPrompt'] =>
+  source === 'prompt' && !isRestrictedInstructionsPrompt(prompt) ? (prompt ?? null) : null;
+
+/**
+ * Whether the form's linked-prompt selection differs from the agent last loaded from
+ * the server, so a save sends `instructionsPrompt` only on an actual edit. Compares
+ * resolved links rather than `dirtyFields.instructionsPrompt`: a post-save
+ * `reset(..., { keepDirtyValues: true })` can leave that field dirty even though its
+ * value already matches what was just persisted, which would resend the link on the
+ * next unrelated save and risk overwriting a concurrent change to it.
+ */
+export function computeInstructionsPromptChanged(
+  formSource: AgentForm['instructionsSource'],
+  formPrompt: AgentForm['instructionsPrompt'],
+  lastLoadedPrompt: AgentForm['instructionsPrompt'] | null | undefined,
+): boolean {
+  const current = resolveInstructionsPromptLink(formSource, formPrompt);
+  const stored = resolveInstructionsPromptLink(
+    lastLoadedPrompt != null ? 'prompt' : 'inline',
+    lastLoadedPrompt ?? null,
+  );
+  return !isEqual(current, stored);
+}
+
 type UploadAvatarFn = (variables: { agent_id: string; formData: FormData }) => Promise<Agent>;
 
 export interface PersistAvatarChangesParams {
@@ -457,6 +490,19 @@ export default function AgentPanel() {
   const previousVersionRef = useRef<number | undefined>();
   const submittedDirtyRef = useRef(false);
   const submittedRef = useRef<{ payload?: AgentUpdateParams; previous?: Agent }>({});
+  /** The linked-prompt selection last seen from the server, compared against the form's
+   *  current value to decide whether a save carries an actual edit (see
+   *  `computeInstructionsPromptChanged`). `AgentSelect`'s post-save `reset(..., {
+   *  keepDirtyValues: true })` can leave `dirtyFields.instructionsPrompt` true even after
+   *  the field's value again matches what was just persisted, so `dirtyFields` alone
+   *  cannot answer "did this save change the link" without risking a stale resend that
+   *  overwrites a concurrent edit. */
+  const lastLoadedInstructionsPromptRef = useRef<AgentForm['instructionsPrompt']>(null);
+  useEffect(() => {
+    if (agentQuery.data) {
+      lastLoadedInstructionsPromptRef.current = agentQuery.data.instructionsPrompt ?? null;
+    }
+  }, [agentQuery.data]);
 
   const allowedProviders = useMemo(
     () => new Set(agentsConfig?.allowedProviders),
@@ -646,8 +692,11 @@ export default function AgentPanel() {
     async (data: AgentForm) => {
       const tools = Array.from(new Set([...(data.tools ?? []), ...resolveCapabilityTools(data)]));
 
-      const instructionsPromptChanged =
-        dirtyFields.instructionsPrompt === true || dirtyFields.instructionsSource === true;
+      const instructionsPromptChanged = computeInstructionsPromptChanged(
+        data.instructionsSource,
+        data.instructionsPrompt,
+        lastLoadedInstructionsPromptRef.current,
+      );
       const {
         payload: basePayload,
         provider,

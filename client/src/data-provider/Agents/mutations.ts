@@ -67,6 +67,39 @@ const mergeAgentListRow = (previous: t.Agent, next: t.Agent): t.Agent => {
   return { ...next, isEditable: previous.isEditable };
 };
 
+const isRestrictedInstructionsPromptValue = (
+  value: t.Agent['instructionsPrompt'],
+): value is t.RestrictedAgentInstructionsPrompt =>
+  value != null && (value as t.RestrictedAgentInstructionsPrompt).restricted === true;
+
+/**
+ * Guards the expanded agent cache against a write response that turns a restricted
+ * link stub into an editable one. A `PATCH` response is not filtered by
+ * `presentForEditor` the way an EDIT-branch `GET` is, so it can carry an unredacted
+ * `groupId` for an editor who cannot VIEW the linked group, whenever the write did
+ * not itself submit a change to the link (`instructionsPrompt` absent from
+ * `submitted`, per the field-absent-means-no-change rule the write path already
+ * follows). Keeps the previously cached stub in that case; otherwise passes the
+ * response through unchanged.
+ */
+export const preserveRestrictedInstructionsPrompt = (
+  previous: t.Agent | undefined,
+  submitted: t.AgentUpdateParams,
+  updated: t.Agent,
+): t.Agent => {
+  const previousLink = previous?.instructionsPrompt;
+  const linkSubmitted = Object.prototype.hasOwnProperty.call(submitted, 'instructionsPrompt');
+  if (
+    !linkSubmitted &&
+    isRestrictedInstructionsPromptValue(previousLink) &&
+    updated.instructionsPrompt != null &&
+    !isRestrictedInstructionsPromptValue(updated.instructionsPrompt)
+  ) {
+    return { ...updated, instructionsPrompt: previousLink };
+  }
+  return updated;
+};
+
 /**
  * Create a new agent
  */
@@ -144,14 +177,25 @@ export const useUpdateAgentMutation = (
           });
         })(allAgentViewAndEditQueryKeys);
 
-        queryClient.setQueryData<t.Agent>([QueryKeys.agent, variables.agent_id], updatedAgent);
+        const previousExpanded = queryClient.getQueryData<t.Agent>([
+          QueryKeys.agent,
+          variables.agent_id,
+          'expanded',
+        ]);
+        const safeUpdatedAgent = preserveRestrictedInstructionsPrompt(
+          previousExpanded,
+          variables.data,
+          updatedAgent,
+        );
+
+        queryClient.setQueryData<t.Agent>([QueryKeys.agent, variables.agent_id], safeUpdatedAgent);
         queryClient.setQueryData<t.Agent>(
           [QueryKeys.agent, variables.agent_id, 'expanded'],
-          updatedAgent,
+          safeUpdatedAgent,
         );
         invalidateAgentMarketplaceQueries(queryClient);
 
-        return options?.onSuccess?.(updatedAgent, variables, context);
+        return options?.onSuccess?.(safeUpdatedAgent, variables, context);
       },
     },
   );

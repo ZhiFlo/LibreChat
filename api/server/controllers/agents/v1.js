@@ -50,6 +50,8 @@ const {
   validateAgentWorkspaceDefaultBinding,
   createPromptService,
   createInstructionsPromptAccess,
+  getInstructionsPromptLinkError,
+  assertModelBoundContent,
 } = require('@librechat/api');
 const {
   Time,
@@ -73,7 +75,6 @@ const {
   hasActivePiiPatterns,
   openapiToFunction,
   removeNullishValues,
-  InstructionsPromptErrorCode,
 } = require('librechat-data-provider');
 const {
   findPubliclyAccessibleResources,
@@ -114,48 +115,16 @@ const getSafeModelParameters = (modelParameters) => {
 const hasEditBit = (permission) => (permission & PermissionBits.EDIT) === PermissionBits.EDIT;
 
 /** Checks the write-path permissions for an agent's linked instructions prompt. Wiring
- *  only: the decision logic (ok/forbidden/restricted/unavailable) lives in
- *  `@librechat/api`'s `createInstructionsPromptAccess`; this module only supplies the
- *  running app's ACL reader and prompt service. */
+ *  only: the decision logic (ok/forbidden/restricted/unavailable) and the HTTP-shaped
+ *  rejection (`getInstructionsPromptLinkError`) live in `@librechat/api`'s
+ *  `createInstructionsPromptAccess`; this module only supplies the running app's ACL
+ *  reader, prompt service, and content-policy inspector. */
 const instructionsPromptAccess = createInstructionsPromptAccess({
   getResourcePermissionsMap,
   promptService: createPromptService({ db, grantPermission }),
+  assertAgentInstructionsContent: ({ instructions, filters }) =>
+    assertModelBoundContent({ filters, agents: [{ instructions }] }),
 });
-
-const INSTRUCTIONS_PROMPT_ERROR_MESSAGES = {
-  [InstructionsPromptErrorCode.UNAVAILABLE]: 'The selected prompt is not available.',
-  [InstructionsPromptErrorCode.FORBIDDEN]: 'You do not have access to the selected prompt.',
-  [InstructionsPromptErrorCode.RESTRICTED]:
-    'You do not have access to the currently linked prompt.',
-};
-
-/**
- * Validates a create/update write of `instructionsPrompt` against the agent's stored
- * link, before any write lands. Returns `null` when the write may proceed.
- * @param {object} params
- * @param {import('librechat-data-provider').AgentInstructionsPrompt | null | undefined} params.previous
- * @param {import('librechat-data-provider').AgentInstructionsPrompt | null | undefined} params.next
- * @param {Express.Request} params.req
- * @returns {Promise<{ status: number, body: { error: string, code: string } } | null>}
- */
-const getInstructionsPromptLinkError = async ({ previous, next, req }) => {
-  const result = await instructionsPromptAccess.validateLinkWrite({
-    user: { id: req.user.id, role: req.user.role },
-    previous,
-    next,
-    filters: req.config?.filters,
-  });
-  if (result.ok) {
-    return null;
-  }
-  return {
-    status: result.status,
-    body: {
-      error: INSTRUCTIONS_PROMPT_ERROR_MESSAGES[result.code],
-      code: result.code,
-    },
-  };
-};
 
 const blockFilteredActionContent = (req, res, actions) => {
   const filters = req.config?.filters;
@@ -931,9 +900,12 @@ const createAgentHandler = async (req, res) => {
 
     if (agentData.instructionsPrompt !== undefined) {
       const linkError = await getInstructionsPromptLinkError({
+        access: instructionsPromptAccess,
+        user: { id: req.user.id, role: req.user.role },
         previous: null,
         next: agentData.instructionsPrompt,
-        req,
+        filters: req.config?.filters,
+        requireResolvable: true,
       });
       if (linkError) {
         return res.status(linkError.status).json(linkError.body);
@@ -1124,7 +1096,15 @@ const getAgentVersionsHandler = async (req, res) => {
       return res.status(404).json({ error: 'Agent not found' });
     }
 
-    return res.status(200).json(versions);
+    /** Each snapshot may carry its own `instructionsPrompt`, independently authorized
+     *  from the agent's current link (see `presentForEditor` on the other EDIT-scoped
+     *  responses). */
+    const presentedVersions = await instructionsPromptAccess.presentVersionsForEditor({
+      user: { id: req.user.id, role: req.user.role },
+      versions,
+    });
+
+    return res.status(200).json(presentedVersions);
   } catch (error) {
     logger.error('[/Agents/:id/versions] Error retrieving agent versions', error);
     res.status(500).json({ error: error.message });
@@ -1265,9 +1245,12 @@ const updateAgentHandler = async (req, res) => {
         return res.status(404).json({ error: 'Agent not found' });
       }
       const linkError = await getInstructionsPromptLinkError({
+        access: instructionsPromptAccess,
+        user: { id: req.user.id, role: req.user.role },
         previous: existingAgent.instructionsPrompt ?? null,
         next: instructionsPromptField,
-        req,
+        filters: req.config?.filters,
+        requireResolvable: true,
       });
       if (linkError) {
         return res.status(linkError.status).json(linkError.body);
@@ -2229,6 +2212,23 @@ const revertAgentVersionHandler = async (req, res) => {
       return res.status(subagentReferenceError.status).json(subagentReferenceError.body);
     }
 
+    /** A revert can silently set, change, or drop `instructionsPrompt` by restoring an
+     *  older snapshot — gate that the same way an explicit update would, but without
+     *  requiring the snapshot's selection to still resolve: a stale revision simply
+     *  continues the turn without instructions (see `initializeAgent`), it does not
+     *  reject the write. */
+    const revertLinkError = await getInstructionsPromptLinkError({
+      access: instructionsPromptAccess,
+      user: { id: req.user.id, role: req.user.role },
+      previous: existingAgent.instructionsPrompt ?? null,
+      next: revertVersion?.instructionsPrompt ?? null,
+      filters: req.config?.filters,
+      requireResolvable: false,
+    });
+    if (revertLinkError) {
+      return res.status(revertLinkError.status).json(revertLinkError.body);
+    }
+
     // Permissions are enforced via route middleware (ACL EDIT)
 
     const actionIds = (revertVersion?.actions ?? [])
@@ -2318,10 +2318,10 @@ const revertAgentVersionHandler = async (req, res) => {
       delete updatedAgent.author;
     }
 
-    /** The reverted version may carry a link (or lack of one) the reverting editor
-     *  cannot VIEW — no extra ACL check gates the revert itself (see the contract
-     *  note on `unsetOnRestore`), but this EDIT-scoped response still gets the same
-     *  restricted-stub treatment as GET and update. */
+    /** The reverted version's own `instructionsPrompt` was already authorized above
+     *  (`revertLinkError`); this is still the same EDIT-scoped response as GET and
+     *  update, so it also gets the restricted-stub treatment across the agent and its
+     *  `versions[]` snapshots for any link the reverting editor cannot VIEW. */
     const presentedAgent = await instructionsPromptAccess.presentForEditor({
       user: { id: req.user.id, role: req.user.role },
       agent: updatedAgent,

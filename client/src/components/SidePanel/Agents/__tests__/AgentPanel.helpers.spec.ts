@@ -15,6 +15,7 @@ import {
   isAvatarUploadOnlyDirty,
   hasPersistedDirtyFields,
   mayHavePersistedChange,
+  computeInstructionsPromptChanged,
 } from '../AgentPanel';
 
 test('the create identity contract excludes the update-only clear sentinel', () => {
@@ -611,5 +612,53 @@ describe('mayHavePersistedChange', () => {
     expect(
       mayHavePersistedChange({ name: 'Agent' }, agent({ description: 'before' }), agent()),
     ).toBe(false);
+  });
+});
+
+describe('computeInstructionsPromptChanged', () => {
+  const link = {
+    source: 'native' as const,
+    groupId: 'group_1',
+    selection: { type: 'production' as const },
+  };
+  const otherLink = {
+    source: 'native' as const,
+    groupId: 'group_2',
+    selection: { type: 'production' as const },
+  };
+  const stub = { source: 'native' as const, restricted: true as const };
+
+  it('is unchanged for an unlinked form matching an unlinked agent', () => {
+    expect(computeInstructionsPromptChanged('inline', null, null)).toBe(false);
+    expect(computeInstructionsPromptChanged('inline', null, undefined)).toBe(false);
+  });
+
+  it('is changed when switching from inline to a selected link', () => {
+    expect(computeInstructionsPromptChanged('prompt', link, null)).toBe(true);
+  });
+
+  it('is changed when switching a linked agent back to inline', () => {
+    expect(computeInstructionsPromptChanged('inline', null, link)).toBe(true);
+  });
+
+  it('is changed when picking a different link than the one loaded', () => {
+    expect(computeInstructionsPromptChanged('prompt', otherLink, link)).toBe(true);
+  });
+
+  it('is unchanged when the form still carries the link exactly as loaded', () => {
+    /** This is the case a stale `dirtyFields.instructionsPrompt` gets wrong: the field
+     *  was dirtied by the save that set this link, but the value now matches what the
+     *  server has, so nothing here warrants resending it. */
+    expect(computeInstructionsPromptChanged('prompt', link, link)).toBe(false);
+    expect(computeInstructionsPromptChanged('prompt', { ...link }, link)).toBe(false);
+  });
+
+  it('is unchanged for a restricted stub the editor cannot see, in either direction', () => {
+    expect(computeInstructionsPromptChanged('prompt', stub, stub)).toBe(false);
+    expect(computeInstructionsPromptChanged('prompt', stub, null)).toBe(false);
+  });
+
+  it('is changed when an editor with access replaces a restricted stub with a real link', () => {
+    expect(computeInstructionsPromptChanged('prompt', link, stub)).toBe(true);
   });
 });

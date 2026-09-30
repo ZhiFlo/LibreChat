@@ -1,6 +1,6 @@
 import React from 'react';
 import { useForm, FormProvider } from 'react-hook-form';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import type { TPromptGroup, TPrompt } from 'librechat-data-provider';
 import type { UseFormReturn } from 'react-hook-form';
 import type { AgentForm } from '~/common';
@@ -91,13 +91,18 @@ const prompt = (overrides: Partial<TPrompt> = {}): TPrompt => ({
 
 function Harness({
   defaultInstructionsPrompt = null,
+  defaultInstructionsSource = 'prompt',
   onMethods,
 }: {
   defaultInstructionsPrompt?: unknown;
+  defaultInstructionsSource?: AgentForm['instructionsSource'];
   onMethods?: (methods: UseFormReturn<AgentForm>) => void;
 }) {
   const methods = useForm<AgentForm>({
-    defaultValues: { instructionsPrompt: defaultInstructionsPrompt } as Partial<AgentForm>,
+    defaultValues: {
+      instructionsSource: defaultInstructionsSource,
+      instructionsPrompt: defaultInstructionsPrompt,
+    } as Partial<AgentForm>,
   });
   onMethods?.(methods);
   return (
@@ -163,7 +168,9 @@ describe('InstructionsPromptFields', () => {
     let methods: UseFormReturn<AgentForm> | undefined;
     render(<Harness onMethods={(m) => (methods = m)} />);
 
-    fireEvent.change(screen.getByLabelText('com_ui_prompt'), { target: { value: 'group1' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'com_ui_prompt' }), {
+      target: { value: 'group1' },
+    });
 
     expect(methods?.getValues('instructionsPrompt')).toEqual({
       source: 'native',
@@ -185,7 +192,9 @@ describe('InstructionsPromptFields', () => {
       />,
     );
 
-    const versionSelect = screen.getByLabelText('com_agents_instructions_prompt_version_label');
+    const versionSelect = screen.getByRole('combobox', {
+      name: 'com_agents_instructions_prompt_version_label',
+    });
     const optionValues = Array.from(versionSelect.querySelectorAll('option')).map(
       (option) => (option as HTMLOptionElement).value,
     );
@@ -210,9 +219,10 @@ describe('InstructionsPromptFields', () => {
       />,
     );
 
-    fireEvent.change(screen.getByLabelText('com_agents_instructions_prompt_version_label'), {
-      target: { value: 'p1' },
-    });
+    fireEvent.change(
+      screen.getByRole('combobox', { name: 'com_agents_instructions_prompt_version_label' }),
+      { target: { value: 'p1' } },
+    );
 
     expect(methods?.getValues('instructionsPrompt')).toEqual({
       source: 'native',
@@ -261,5 +271,197 @@ describe('InstructionsPromptFields', () => {
     );
 
     expect(screen.getByText('com_agents_instructions_prompt_load_error')).toBeInTheDocument();
+  });
+
+  it('guards a 200 {message} group response as a load failure, not an empty library', () => {
+    mockGroupsQuery.data = { message: 'not allowed' };
+    render(<Harness />);
+
+    expect(screen.getByText('com_agents_instructions_prompt_load_error')).toBeInTheDocument();
+    expect(screen.queryByText('com_agents_instructions_prompt_empty')).not.toBeInTheDocument();
+  });
+
+  describe('required validation', () => {
+    it('blocks the save with a localized error when Prompt mode has no group selected', async () => {
+      let methods: UseFormReturn<AgentForm> | undefined;
+      mockGroupsQuery.data = [group()];
+      render(
+        <Harness
+          defaultInstructionsSource="prompt"
+          defaultInstructionsPrompt={null}
+          onMethods={(m) => (methods = m)}
+        />,
+      );
+
+      let isValid = true;
+      await act(async () => {
+        isValid = await methods!.trigger('instructionsPrompt');
+      });
+
+      expect(isValid).toBe(false);
+      expect(screen.getByText('com_agents_instructions_prompt_required')).toBeInTheDocument();
+    });
+
+    it('passes validation once a group is selected', async () => {
+      let methods: UseFormReturn<AgentForm> | undefined;
+      mockGroupsQuery.data = [group()];
+      render(
+        <Harness
+          defaultInstructionsSource="prompt"
+          defaultInstructionsPrompt={{
+            source: 'native',
+            groupId: 'group1',
+            selection: { type: 'production' },
+          }}
+          onMethods={(m) => (methods = m)}
+        />,
+      );
+
+      let isValid = false;
+      await act(async () => {
+        isValid = await methods!.trigger('instructionsPrompt');
+      });
+
+      expect(isValid).toBe(true);
+    });
+
+    it('never blocks the save on a restricted stub', async () => {
+      let methods: UseFormReturn<AgentForm> | undefined;
+      render(
+        <Harness
+          defaultInstructionsSource="prompt"
+          defaultInstructionsPrompt={{ source: 'native', restricted: true }}
+          onMethods={(m) => (methods = m)}
+        />,
+      );
+
+      let isValid = false;
+      await act(async () => {
+        isValid = await methods!.trigger('instructionsPrompt');
+      });
+
+      expect(isValid).toBe(true);
+    });
+
+    it('does not validate the link while Inline mode is selected', async () => {
+      let methods: UseFormReturn<AgentForm> | undefined;
+      render(
+        <Harness
+          defaultInstructionsSource="inline"
+          defaultInstructionsPrompt={null}
+          onMethods={(m) => (methods = m)}
+        />,
+      );
+
+      let isValid = false;
+      await act(async () => {
+        isValid = await methods!.trigger('instructionsPrompt');
+      });
+
+      expect(isValid).toBe(true);
+    });
+  });
+
+  describe('a linked group missing from the listing', () => {
+    it('shows a "Prompt not found" hint instead of a blank Prompt display', () => {
+      mockGroupsQuery.data = [group({ _id: 'group_other', name: 'Other prompt' })];
+      render(
+        <Harness
+          defaultInstructionsPrompt={{
+            source: 'native',
+            groupId: 'group_missing',
+            selection: { type: 'production' },
+          }}
+        />,
+      );
+
+      expect(screen.getByText('com_agents_instructions_prompt_not_found')).toBeInTheDocument();
+    });
+
+    it('keeps the Version dropdown usable for switching away from the missing group', () => {
+      mockGroupsQuery.data = [group({ _id: 'group_other', name: 'Other prompt' })];
+      mockPromptsQuery.data = [prompt({ _id: 'p2' }), prompt({ _id: 'p1' })];
+      render(
+        <Harness
+          defaultInstructionsPrompt={{
+            source: 'native',
+            groupId: 'group_missing',
+            selection: { type: 'production' },
+          }}
+        />,
+      );
+
+      expect(
+        screen.getByRole('combobox', { name: 'com_agents_instructions_prompt_version_label' }),
+      ).toBeInTheDocument();
+    });
+  });
+
+  describe('accessible names across every render state', () => {
+    const versionLabel = 'com_agents_instructions_prompt_version_label';
+
+    it('names the Prompt field while loading', () => {
+      mockGroupsQuery.isLoading = true;
+      render(<Harness />);
+
+      expect(screen.getByRole('group', { name: 'com_ui_prompt' })).toBeInTheDocument();
+    });
+
+    it('names the Prompt field on a load error', () => {
+      mockGroupsQuery.isError = true;
+      render(<Harness />);
+
+      expect(screen.getByRole('group', { name: 'com_ui_prompt' })).toBeInTheDocument();
+    });
+
+    it('names the Prompt field when the library is empty', () => {
+      mockGroupsQuery.data = [];
+      render(<Harness />);
+
+      expect(screen.getByRole('group', { name: 'com_ui_prompt' })).toBeInTheDocument();
+    });
+
+    it('names the Prompt field once prompts load', () => {
+      mockGroupsQuery.data = [group()];
+      render(<Harness />);
+
+      expect(screen.getByRole('group', { name: 'com_ui_prompt' })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: 'com_ui_prompt' })).toBeInTheDocument();
+    });
+
+    it('names the Prompt field when the linked group is missing', () => {
+      mockGroupsQuery.data = [group({ _id: 'group_other' })];
+      render(
+        <Harness
+          defaultInstructionsPrompt={{
+            source: 'native',
+            groupId: 'group_missing',
+            selection: { type: 'production' },
+          }}
+        />,
+      );
+
+      expect(screen.getByRole('group', { name: 'com_ui_prompt' })).toBeInTheDocument();
+    });
+
+    it('names the Version field before and after a group is selected', async () => {
+      mockGroupsQuery.data = [group()];
+      mockPromptsQuery.data = [prompt()];
+      let methods: UseFormReturn<AgentForm> | undefined;
+      render(<Harness onMethods={(m) => (methods = m)} />);
+
+      expect(screen.getByRole('group', { name: versionLabel })).toBeInTheDocument();
+
+      await act(async () => {
+        methods!.setValue('instructionsPrompt', {
+          source: 'native',
+          groupId: 'group1',
+          selection: { type: 'production' },
+        });
+      });
+
+      expect(screen.getByRole('group', { name: versionLabel })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: versionLabel })).toBeInTheDocument();
+    });
   });
 });

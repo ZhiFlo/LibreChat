@@ -100,12 +100,16 @@ function VersionSelect({
   return (
     <div className="flex min-w-0 flex-col">
       <Label
+        id="instructions-prompt-version-label"
         className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-text-secondary"
-        htmlFor="instructions-prompt-version"
       >
         {localize('com_agents_instructions_prompt_version_label')}
       </Label>
-      {content}
+      {/* `aria-labelledby`, not `htmlFor`, because the loading/error/empty states
+       * render a plain `div`, not the combobox `id` a `for` would need to target. */}
+      <div role="group" aria-labelledby="instructions-prompt-version-label">
+        {content}
+      </div>
     </div>
   );
 }
@@ -119,17 +123,36 @@ export default function InstructionsPromptFields() {
   const localize = useLocalize();
   const { control } = useFormContext<AgentForm>();
   const groupsQuery = useGetAllPromptGroups();
-  const groups = Array.isArray(groupsQuery.data) ? groupsQuery.data : [];
+  /** The endpoint can answer a 200 with `{ message }` instead of an array (for example, on
+   *  a permission failure that does not reach `isError`); treat that the same as a load
+   *  failure rather than an empty prompt library. */
+  const groupsData = groupsQuery.data;
+  const groupsFailed = groupsQuery.isError || !Array.isArray(groupsData);
+  const groups = Array.isArray(groupsData) ? groupsData : [];
 
   return (
     <Controller
       name="instructionsPrompt"
       control={control}
-      render={({ field }) => {
+      rules={{
+        validate: (value, formValues) => {
+          if (formValues.instructionsSource !== 'prompt') {
+            return true;
+          }
+          if (isRestrictedInstructionsPrompt(value)) {
+            return true;
+          }
+          return Boolean(value?.groupId) || localize('com_agents_instructions_prompt_required');
+        },
+      }}
+      render={({ field, fieldState: { error } }) => {
         const link =
           field.value != null && !isRestrictedInstructionsPrompt(field.value) ? field.value : null;
         const groupId = link?.groupId ?? '';
         const selectedGroup = groups.find((group) => group._id === groupId);
+        /** A link that survived loading but matches no listed group: the group was
+         *  deleted, or the editor's share access to it was revoked. */
+        const linkedGroupMissing = groupId !== '' && !groupsFailed && selectedGroup == null;
 
         const handleGroupChange = (nextGroupId: string) => {
           if (nextGroupId === '') {
@@ -146,7 +169,7 @@ export default function InstructionsPromptFields() {
         let groupField: ReactNode;
         if (groupsQuery.isLoading) {
           groupField = <div className={fieldWrapperClass}>{localize('com_ui_loading')}</div>;
-        } else if (groupsQuery.isError) {
+        } else if (groupsFailed) {
           groupField = (
             <LoadError
               forbidden={getHttpStatus(groupsQuery.error) === 403}
@@ -157,6 +180,12 @@ export default function InstructionsPromptFields() {
           groupField = (
             <div className={fieldWrapperClass}>
               {localize('com_agents_instructions_prompt_empty')}
+            </div>
+          );
+        } else if (linkedGroupMissing) {
+          groupField = (
+            <div className={fieldWrapperClass} role="note">
+              {localize('com_agents_instructions_prompt_not_found')}
             </div>
           );
         } else {
@@ -181,12 +210,24 @@ export default function InstructionsPromptFields() {
           <div className="grid grid-cols-2 gap-2">
             <div className="flex min-w-0 flex-col">
               <Label
+                id="instructions-prompt-group-label"
                 className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-text-secondary"
-                htmlFor="instructions-prompt-group"
               >
                 {localize('com_ui_prompt')}
               </Label>
-              {groupField}
+              {/* `aria-labelledby`, not `htmlFor`: the loading/error/empty/not-found
+               * states render a plain `div`, not the combobox `id` a `for` would need. */}
+              <div role="group" aria-labelledby="instructions-prompt-group-label">
+                {groupField}
+              </div>
+              {error && (
+                <span
+                  className="mt-1 text-xs text-text-destructive transition duration-300 ease-in-out"
+                  role="alert"
+                >
+                  {error.message}
+                </span>
+              )}
             </div>
             <VersionSelect
               groupId={groupId}

@@ -2,12 +2,18 @@ import { createElement } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { dataService, PermissionBits, QueryKeys } from 'librechat-data-provider';
-import type { Agent, AgentListResponse, GraphEdge } from 'librechat-data-provider';
+import type {
+  Agent,
+  AgentListResponse,
+  AgentUpdateParams,
+  GraphEdge,
+} from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import {
   useDeleteAgentMutation,
   useDuplicateAgentMutation,
   useUpdateAgentMutation,
+  preserveRestrictedInstructionsPrompt,
 } from '../mutations';
 
 jest.mock('librechat-data-provider', () => {
@@ -176,6 +182,132 @@ describe('useUpdateAgentMutation', () => {
       name: 'Renamed',
       isEditable: false,
     });
+  });
+
+  it('keeps a restricted stub in the expanded cache when the response carries an unredacted link the editor never submitted', async () => {
+    /** A `PATCH` response is not filtered by `presentForEditor` the way an EDIT-branch
+     *  `GET` is, so it can leak the linked group's identity to an editor who cannot
+     *  VIEW it, on a save that never touched the link at all. */
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const agentId = 'agent_restricted_link';
+    const expandedKey = [QueryKeys.agent, agentId, 'expanded'];
+    const stub = { source: 'native' as const, restricted: true as const };
+    queryClient.setQueryData<Agent>(expandedKey, {
+      ...createAgent(agentId),
+      instructionsPrompt: stub,
+    });
+
+    const unredactedLink = {
+      source: 'native' as const,
+      groupId: 'group_1',
+      selection: { type: 'production' as const },
+    };
+    const responseWithLeakedLink = createAgent(agentId);
+    responseWithLeakedLink.name = 'Renamed';
+    responseWithLeakedLink.instructionsPrompt = unredactedLink;
+    jest.mocked(dataService.updateAgent).mockResolvedValue(responseWithLeakedLink);
+
+    const { result } = renderHook(() => useUpdateAgentMutation(), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({ agent_id: agentId, data: { name: 'Renamed' } });
+    });
+
+    const cached = queryClient.getQueryData<Agent>(expandedKey);
+    expect(cached?.instructionsPrompt).toEqual(stub);
+    /** Only the link is held back; the rest of the response still lands. */
+    expect(cached?.name).toBe('Renamed');
+  });
+
+  it('lets an intentional link change through even when the previous link was restricted', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const agentId = 'agent_relinked';
+    const expandedKey = [QueryKeys.agent, agentId, 'expanded'];
+    const stub = { source: 'native' as const, restricted: true as const };
+    queryClient.setQueryData<Agent>(expandedKey, {
+      ...createAgent(agentId),
+      instructionsPrompt: stub,
+    });
+
+    const newLink = {
+      source: 'native' as const,
+      groupId: 'group_2',
+      selection: { type: 'production' as const },
+    };
+    const response = createAgent(agentId);
+    response.instructionsPrompt = newLink;
+    jest.mocked(dataService.updateAgent).mockResolvedValue(response);
+
+    const { result } = renderHook(() => useUpdateAgentMutation(), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        agent_id: agentId,
+        data: { instructionsPrompt: newLink },
+      });
+    });
+
+    expect(queryClient.getQueryData<Agent>(expandedKey)?.instructionsPrompt).toEqual(newLink);
+  });
+});
+
+describe('preserveRestrictedInstructionsPrompt', () => {
+  const stub = { source: 'native' as const, restricted: true as const };
+  const link = {
+    source: 'native' as const,
+    groupId: 'group_1',
+    selection: { type: 'production' as const },
+  };
+
+  it('holds back an unredacted response when the write never submitted the field', () => {
+    const previous = { ...createAgent('a'), instructionsPrompt: stub };
+    const updated = { ...createAgent('a'), instructionsPrompt: link };
+
+    expect(preserveRestrictedInstructionsPrompt(previous, {}, updated)).toEqual({
+      ...updated,
+      instructionsPrompt: stub,
+    });
+  });
+
+  it('passes an intentional change through, even from a restricted stub', () => {
+    const previous = { ...createAgent('a'), instructionsPrompt: stub };
+    const updated = { ...createAgent('a'), instructionsPrompt: link };
+    const submitted: AgentUpdateParams = { instructionsPrompt: link };
+
+    expect(preserveRestrictedInstructionsPrompt(previous, submitted, updated)).toEqual(updated);
+  });
+
+  it('passes an unlinked or still-restricted response through unchanged', () => {
+    const previous = { ...createAgent('a'), instructionsPrompt: stub };
+
+    expect(
+      preserveRestrictedInstructionsPrompt(
+        previous,
+        {},
+        { ...createAgent('a'), instructionsPrompt: null },
+      ),
+    ).toEqual({ ...createAgent('a'), instructionsPrompt: null });
+    expect(
+      preserveRestrictedInstructionsPrompt(
+        previous,
+        {},
+        { ...createAgent('a'), instructionsPrompt: stub },
+      ),
+    ).toEqual({ ...createAgent('a'), instructionsPrompt: stub });
+  });
+
+  it('is a no-op when there was no previously cached agent', () => {
+    const updated = { ...createAgent('a'), instructionsPrompt: link };
+
+    expect(preserveRestrictedInstructionsPrompt(undefined, {}, updated)).toEqual(updated);
   });
 });
 

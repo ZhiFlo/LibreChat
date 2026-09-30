@@ -27,6 +27,10 @@ class FakeCache implements LinkedInstructionsCache {
   get size(): number {
     return this.store.size;
   }
+
+  keys(): string[] {
+    return [...this.store.keys()];
+  }
 }
 
 const blockingFilters: FiltersConfig = {
@@ -35,6 +39,19 @@ const blockingFilters: FiltersConfig = {
       starterPatterns: [],
       customPatterns: [{ id: 'private', label: 'private value', regex: 'PRIVATE-[A-Z]+' }],
       fields: ['text'],
+    },
+  },
+};
+
+/** Blocks only via the agent-instructions policy — `prompts.pii` is untouched — so a
+ *  finding here can only come from the `assertModelBoundContent({ agents: [...] })`
+ *  check, never from `inspectPromptContent`. */
+const agentInstructionsBlockingFilters: FiltersConfig = {
+  agentInstructions: {
+    pii: {
+      starterPatterns: [],
+      customPatterns: [{ id: 'secret', label: 'secret value', regex: 'SECRET-[A-Z]+' }],
+      fields: ['instructions'],
     },
   },
 };
@@ -78,7 +95,7 @@ function makePromptService(
   };
 }
 
-/** Flushes pending microtasks (used to let fire-and-forget usage calls settle). */
+/** Flushes pending microtasks (used to let fire-and-forget calls settle). */
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 describe('createLinkedInstructionsResolver', () => {
@@ -88,7 +105,7 @@ describe('createLinkedInstructionsResolver', () => {
     const logger = makeLogger();
     const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
 
-    const result = await resolver({ link: productionLink, recordUsage: false });
+    const result = await resolver({ link: productionLink });
 
     expect(result).toEqual({
       status: 'resolved',
@@ -113,7 +130,7 @@ describe('createLinkedInstructionsResolver', () => {
     const logger = makeLogger();
     const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
 
-    const result = await resolver({ link: exactLink, recordUsage: false });
+    const result = await resolver({ link: exactLink });
 
     expect(result.status).toBe('resolved');
     expect(promptService.resolvePrompt).toHaveBeenCalledWith({
@@ -136,7 +153,7 @@ describe('createLinkedInstructionsResolver', () => {
     const logger = makeLogger();
     const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
 
-    const result = await resolver({ link: productionLink, recordUsage: false });
+    const result = await resolver({ link: productionLink });
 
     expect(result).toEqual({
       status: 'resolved',
@@ -146,7 +163,7 @@ describe('createLinkedInstructionsResolver', () => {
     expect(promptService.resolvePrompt).not.toHaveBeenCalled();
   });
 
-  it('re-inspects a cache hit and blocks it when current filters now block the content', async () => {
+  it('re-inspects a cache hit and blocks it when current prompt filters now block the content', async () => {
     const cache = new FakeCache();
     await cache.set(`native:${groupId}:production`, {
       groupId,
@@ -158,14 +175,52 @@ describe('createLinkedInstructionsResolver', () => {
     const logger = makeLogger();
     const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
 
+    const result = await resolver({ link: productionLink, filters: blockingFilters });
+
+    expect(result).toEqual({ status: 'unavailable', reason: 'blocked_content' });
+    expect(promptService.resolvePrompt).not.toHaveBeenCalled();
+  });
+
+  it('blocks a cache hit under the agent-instructions policy alone (prompts.pii is untouched)', async () => {
+    const cache = new FakeCache();
+    await cache.set(`native:${groupId}:production`, {
+      groupId,
+      promptId,
+      prompt: 'Contains SECRET-VALUE marker',
+      type: 'text',
+    });
+    const promptService = makePromptService();
+    const logger = makeLogger();
+    const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
     const result = await resolver({
       link: productionLink,
-      filters: blockingFilters,
-      recordUsage: false,
+      filters: agentInstructionsBlockingFilters,
     });
 
     expect(result).toEqual({ status: 'unavailable', reason: 'blocked_content' });
     expect(promptService.resolvePrompt).not.toHaveBeenCalled();
+  });
+
+  it('blocks a fresh resolution under the agent-instructions policy alone (prompts.pii is untouched)', async () => {
+    const cache = new FakeCache();
+    const promptService = makePromptService({
+      resolvePrompt: jest.fn().mockResolvedValue({
+        ok: true,
+        value: makeResolvedPrompt({ prompt: 'Contains SECRET-VALUE marker' }),
+      }),
+    });
+    const logger = makeLogger();
+    const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+    const result = await resolver({
+      link: productionLink,
+      filters: agentInstructionsBlockingFilters,
+    });
+
+    expect(result).toEqual({ status: 'unavailable', reason: 'blocked_content' });
+    // Blocked before the cache write: a violation is never cached.
+    await expect(cache.get(`native:${groupId}:production`)).resolves.toBeUndefined();
   });
 
   it('fetches fresh content after the cached entry expires', async () => {
@@ -184,7 +239,6 @@ describe('createLinkedInstructionsResolver', () => {
       const first = await resolver({
         link: productionLink,
         config: { native: { cacheTtlMs: 1000 } },
-        recordUsage: false,
       });
       expect(first).toMatchObject({ status: 'resolved', prompt: 'first' });
 
@@ -193,7 +247,6 @@ describe('createLinkedInstructionsResolver', () => {
       const second = await resolver({
         link: productionLink,
         config: { native: { cacheTtlMs: 1000 } },
-        recordUsage: false,
       });
       expect(second).toMatchObject({ status: 'resolved', prompt: 'second' });
       expect(promptService.resolvePrompt).toHaveBeenCalledTimes(2);
@@ -202,8 +255,9 @@ describe('createLinkedInstructionsResolver', () => {
     }
   });
 
-  it('does not write the cache when cacheTtlMs is 0', async () => {
+  it('does not read or write the cache when cacheTtlMs is 0', async () => {
     const cache = new FakeCache();
+    const getSpy = jest.spyOn(cache, 'get');
     const setSpy = jest.spyOn(cache, 'set');
     const promptService = makePromptService();
     const logger = makeLogger();
@@ -212,11 +266,59 @@ describe('createLinkedInstructionsResolver', () => {
     const result = await resolver({
       link: productionLink,
       config: { native: { cacheTtlMs: 0 } },
-      recordUsage: false,
     });
 
     expect(result.status).toBe('resolved');
+    expect(getSpy).not.toHaveBeenCalled();
     expect(setSpy).not.toHaveBeenCalled();
+  });
+
+  it('falls through to resolvePrompt and still resolves when the cache read errors', async () => {
+    const cache = new FakeCache();
+    const getSpy = jest.spyOn(cache, 'get').mockRejectedValue(new Error('cache unavailable'));
+    const promptService = makePromptService();
+    const logger = makeLogger();
+    const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+    const result = await resolver({ link: productionLink });
+
+    expect(getSpy).toHaveBeenCalledTimes(1);
+    expect(promptService.resolvePrompt).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({
+      status: 'resolved',
+      prompt: 'You are a helpful assistant.',
+      facts: { source: 'native', groupId, promptId },
+    });
+    expect(logger.warn).toHaveBeenCalledWith(
+      '[linkedInstructions] Cache read failed; resolving without cache',
+      expect.objectContaining({ groupId, errorName: 'Error' }),
+    );
+  });
+
+  it('bounds total latency to ~timeoutMs when the cache read itself hangs, sharing one deadline with resolution', async () => {
+    jest.useFakeTimers();
+    try {
+      const cache = new FakeCache();
+      jest.spyOn(cache, 'get').mockReturnValue(new Promise(() => {}));
+      const promptService = makePromptService({
+        // Also hangs, so this call can only settle via the shared-deadline timeout,
+        // not because the mock happened to resolve fast.
+        resolvePrompt: jest.fn().mockReturnValue(new Promise(() => {})),
+      });
+      const logger = makeLogger();
+      const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+      const pending = resolver({ link: productionLink, config: { timeoutMs: 50 } });
+      // The cache-phase timeout consumes the whole budget; the resolvePrompt phase
+      // then gets ~0ms remaining and schedules its own timer right after, so a
+      // small second advance (not another full timeoutMs) is enough to settle it.
+      await jest.advanceTimersByTimeAsync(50);
+      await jest.advanceTimersByTimeAsync(5);
+
+      await expect(pending).resolves.toEqual({ status: 'unavailable', reason: 'timeout' });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('returns unavailable "timeout" when resolvePrompt does not settle in time', async () => {
@@ -237,7 +339,6 @@ describe('createLinkedInstructionsResolver', () => {
       const pending = resolver({
         link: productionLink,
         config: { timeoutMs: 10 },
-        recordUsage: false,
       });
       await jest.advanceTimersByTimeAsync(11);
 
@@ -257,7 +358,7 @@ describe('createLinkedInstructionsResolver', () => {
     const logger = makeLogger();
     const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
 
-    const result = await resolver({ link: productionLink, recordUsage: false });
+    const result = await resolver({ link: productionLink });
 
     expect(result).toEqual({ status: 'unavailable', reason: 'error' });
     expect(logger.error).toHaveBeenCalledWith(
@@ -281,9 +382,10 @@ describe('createLinkedInstructionsResolver', () => {
       cache,
       logger,
     });
-    await expect(
-      unavailableResolver({ link: productionLink, recordUsage: false }),
-    ).resolves.toEqual({ status: 'unavailable', reason: 'unavailable_selection' });
+    await expect(unavailableResolver({ link: productionLink })).resolves.toEqual({
+      status: 'unavailable',
+      reason: 'unavailable_selection',
+    });
 
     const blockedService = makePromptService({
       resolvePrompt: jest.fn().mockResolvedValue({
@@ -296,7 +398,7 @@ describe('createLinkedInstructionsResolver', () => {
       cache: new FakeCache(),
       logger,
     });
-    await expect(blockedResolver({ link: productionLink, recordUsage: false })).resolves.toEqual({
+    await expect(blockedResolver({ link: productionLink })).resolves.toEqual({
       status: 'unavailable',
       reason: 'blocked_content',
     });
@@ -313,9 +415,9 @@ describe('createLinkedInstructionsResolver', () => {
     const controller = new AbortController();
     controller.abort();
 
-    await expect(
-      resolver({ link: productionLink, signal: controller.signal, recordUsage: false }),
-    ).rejects.toBe(controller.signal.reason);
+    await expect(resolver({ link: productionLink, signal: controller.signal })).rejects.toBe(
+      controller.signal.reason,
+    );
     expect(getSpy).not.toHaveBeenCalled();
     expect(setSpy).not.toHaveBeenCalled();
     expect(promptService.resolvePrompt).not.toHaveBeenCalled();
@@ -333,7 +435,6 @@ describe('createLinkedInstructionsResolver', () => {
     const pending = resolver({
       link: productionLink,
       signal: controller.signal,
-      recordUsage: false,
     });
     controller.abort();
 
@@ -341,82 +442,105 @@ describe('createLinkedInstructionsResolver', () => {
     expect(setSpy).not.toHaveBeenCalled();
   });
 
-  it('records usage once when resolved and recordUsage is true', async () => {
-    const cache = new FakeCache();
-    const promptService = makePromptService();
-    const logger = makeLogger();
-    const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
-
-    await resolver({ link: productionLink, recordUsage: true });
-    await flush();
-
-    expect(promptService.incrementPromptGroupUsage).toHaveBeenCalledTimes(1);
-    expect(promptService.incrementPromptGroupUsage).toHaveBeenCalledWith(groupId);
-  });
-
-  it('does not record usage when recordUsage is false', async () => {
-    const cache = new FakeCache();
-    const promptService = makePromptService();
-    const logger = makeLogger();
-    const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
-
-    await resolver({ link: productionLink, recordUsage: false });
-    await flush();
-
-    expect(promptService.incrementPromptGroupUsage).not.toHaveBeenCalled();
-  });
-
-  it('does not record usage when the result is unavailable', async () => {
-    const cache = new FakeCache();
-    const promptService = makePromptService({
-      resolvePrompt: jest.fn().mockRejectedValue(new Error('boom')),
-    });
-    const logger = makeLogger();
-    const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
-
-    await resolver({ link: productionLink, recordUsage: true });
-    await flush();
-
-    expect(promptService.incrementPromptGroupUsage).not.toHaveBeenCalled();
-  });
-
-  it('logs but does not fail resolution when usage recording fails', async () => {
-    const cache = new FakeCache();
-    const promptService = makePromptService({
-      incrementPromptGroupUsage: jest.fn().mockRejectedValue(new Error('usage boom')),
-    });
-    const logger = makeLogger();
-    const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
-
-    const result = await resolver({ link: productionLink, recordUsage: true });
-    await flush();
-
-    expect(result.status).toBe('resolved');
-    expect(logger.warn).toHaveBeenCalledWith(
-      '[linkedInstructions] Failed to record prompt group usage',
-      expect.objectContaining({ groupId, errorName: 'Error' }),
-    );
-  });
-
   it('never logs prompt text', async () => {
     const secretMarker = 'DO-NOT-LOG-THIS-PROMPT-BODY';
     const cache = new FakeCache();
+    jest.spyOn(cache, 'set').mockRejectedValue(new Error(secretMarker));
     const promptService = makePromptService({
       resolvePrompt: jest.fn().mockResolvedValue({
         ok: true,
         value: makeResolvedPrompt({ prompt: secretMarker }),
       }),
-      incrementPromptGroupUsage: jest.fn().mockRejectedValue(new Error(secretMarker)),
     });
     const logger = makeLogger();
     const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
 
-    await resolver({ link: productionLink, recordUsage: true });
+    await resolver({ link: productionLink });
     await flush();
 
     const allLogCalls = [...logger.warn.mock.calls, ...logger.error.mock.calls];
     for (const call of allLogCalls) {
       expect(JSON.stringify(call)).not.toContain(secretMarker);
     }
+  });
+
+  describe('tenant scoping', () => {
+    it('scopes the cache key by tenant so two tenants never share an entry', async () => {
+      const { tenantStorage } = await import('@librechat/data-schemas');
+      const cache = new FakeCache();
+      const promptService = makePromptService();
+      const logger = makeLogger();
+      const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+      await tenantStorage.run({ tenantId: 'tenant-a' }, () => resolver({ link: productionLink }));
+      await tenantStorage.run({ tenantId: 'tenant-b' }, () => resolver({ link: productionLink }));
+
+      const keys = cache.keys();
+      expect(keys).toContain(`native:${groupId}:production:tenant-a`);
+      expect(keys).toContain(`native:${groupId}:production:tenant-b`);
+      expect(keys).not.toContain(`native:${groupId}:production`);
+      // Neither tenant's cached entry satisfied the other's read.
+      expect(promptService.resolvePrompt).toHaveBeenCalledTimes(2);
+    });
+
+    it('reuses the same key across calls within one tenant', async () => {
+      const { tenantStorage } = await import('@librechat/data-schemas');
+      const cache = new FakeCache();
+      const promptService = makePromptService();
+      const logger = makeLogger();
+      const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+      await tenantStorage.run({ tenantId: 'tenant-a' }, async () => {
+        await resolver({ link: productionLink });
+        await resolver({ link: productionLink });
+      });
+
+      expect(promptService.resolvePrompt).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('recordUse', () => {
+    it('does not record usage on its own when resolve succeeds', async () => {
+      const cache = new FakeCache();
+      const promptService = makePromptService();
+      const logger = makeLogger();
+      const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+      const result = await resolver({ link: productionLink });
+      await flush();
+
+      expect(result.status).toBe('resolved');
+      expect(promptService.incrementPromptGroupUsage).not.toHaveBeenCalled();
+    });
+
+    it('records a usage generation for the given facts, fire-and-forget', async () => {
+      const cache = new FakeCache();
+      const promptService = makePromptService();
+      const logger = makeLogger();
+      const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+      resolver.recordUse({ source: 'native', groupId, promptId });
+      await flush();
+
+      expect(promptService.incrementPromptGroupUsage).toHaveBeenCalledTimes(1);
+      expect(promptService.incrementPromptGroupUsage).toHaveBeenCalledWith(groupId);
+    });
+
+    it('logs but does not throw when incrementPromptGroupUsage fails', async () => {
+      const cache = new FakeCache();
+      const promptService = makePromptService({
+        incrementPromptGroupUsage: jest.fn().mockRejectedValue(new Error('usage boom')),
+      });
+      const logger = makeLogger();
+      const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+      expect(() => resolver.recordUse({ source: 'native', groupId, promptId })).not.toThrow();
+      await flush();
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        '[linkedInstructions] Failed to record prompt group usage',
+        expect.objectContaining({ groupId, errorName: 'Error' }),
+      );
+    });
   });
 });

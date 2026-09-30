@@ -10,6 +10,9 @@ const {
   ACTION_CREDENTIAL_REFRESH_MESSAGE,
   buildActionOAuthTokenDeleteQueries,
   blockFilteredActionProjection,
+  createPromptService,
+  createInstructionsPromptAccess,
+  assertModelBoundContent,
 } = require('@librechat/api');
 const {
   Permissions,
@@ -26,12 +29,28 @@ const {
   encryptMetadata,
   domainParser,
 } = require('~/server/services/ActionService');
-const { findAccessibleResources } = require('~/server/services/PermissionService');
+const {
+  findAccessibleResources,
+  getResourcePermissionsMap,
+  grantPermission,
+} = require('~/server/services/PermissionService');
 const { attachOwnerContacts } = require('~/server/services/Agents/ownerContact');
 const db = require('~/models');
 const { canAccessAgentResource } = require('~/server/middleware');
 
 const router = express.Router();
+
+/** Same wiring as `controllers/agents/v1.js`: the write-path decision logic lives in
+ *  `@librechat/api`'s `createInstructionsPromptAccess`. This route only reads an
+ *  existing link (`presentForEditor`) before the updated agent reaches the client's
+ *  expanded-agent cache; it never validates a write of `instructionsPrompt` because
+ *  this route cannot change it. */
+const instructionsPromptAccess = createInstructionsPromptAccess({
+  getResourcePermissionsMap,
+  promptService: createPromptService({ db, grantPermission }),
+  assertAgentInstructionsContent: ({ instructions, filters }) =>
+    assertModelBoundContent({ filters, agents: [{ instructions }] }),
+});
 
 async function deleteActionOAuthTokens(action_id) {
   await Promise.all(
@@ -263,7 +282,16 @@ router.post(
         }
       }
 
-      res.json([updatedAgent, updatedAction]);
+      /** `updatedAgent` is the same EDIT-scoped, `versions[]`-carrying shape returned by
+       *  `controllers/agents/v1.js`'s write handlers, and the client writes this response
+       *  into the expanded agent cache — an unrelated action edit must not leak a link the
+       *  caller cannot VIEW. */
+      const presentedAgent = await instructionsPromptAccess.presentForEditor({
+        user: { id: req.user.id, role: req.user.role },
+        agent: updatedAgent,
+      });
+
+      res.json([presentedAgent, updatedAction]);
     } catch (error) {
       const message = 'Trouble updating the Agent Action';
       logger.error(message, error);

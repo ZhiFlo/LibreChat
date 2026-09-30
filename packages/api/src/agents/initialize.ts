@@ -1104,17 +1104,54 @@ export async function initializeAgent(
   }
 
   /**
+   * Independent of every other step below (tool loading, resource priming,
+   * provider setup), so it starts as soon as the link and signal are known
+   * rather than waiting until the instructions block, well below, is reached.
+   * A valid link with no resolver never calls out, matching the "no resolver"
+   * fallback this same shape has always had.
+   */
+  const instructionsPromptLink =
+    agent.instructionsPrompt != null &&
+    agent.instructionsPrompt.source === 'native' &&
+    'groupId' in agent.instructionsPrompt
+      ? (agent.instructionsPrompt as AgentInstructionsPrompt)
+      : undefined;
+  const linkedInstructionsPromise =
+    instructionsPromptLink && params.resolveLinkedInstructions
+      ? params.resolveLinkedInstructions({
+          link: instructionsPromptLink,
+          signal: params.signal,
+          filters: appConfig?.filters,
+          config: appConfig?.endpoints?.agents?.linkedInstructions,
+        })
+      : undefined;
+  /**
+   * Started well before its result is needed at the instructions block below.
+   * An abort (or any other rejection) that lands before that await must not
+   * surface as an unhandled rejection; this no-op handler only silences that
+   * warning — the promise itself, awaited later, still carries the real
+   * outcome, rejection included.
+   */
+  linkedInstructionsPromise?.catch(() => {});
+
+  /**
    * Reject the stored agent definition before initialization performs usage
    * accounting, resource priming, tool/MCP loading, or provider setup. Inspect
    * definition fragments directly here: the raw agent may still contain
    * canonical file IDs that can only be validated after resource hydration.
+   *
+   * A valid link means the stored inline `instructions` is dead text — it is
+   * overwritten below with the resolved prompt, or with `''` when the link
+   * can't resolve — so it is excluded from this scan rather than inspected
+   * and then discarded.
    */
   let agentFragments: readonly TextContentFragment[] = [];
   let agentTraversalError: ContentTraversalLimitError | null = null;
+  const agentDefinitionInput = (instructionsPromptLink
+    ? { ...agent, instructions: undefined }
+    : agent) as unknown as Parameters<typeof extractAgentContent>[0];
   try {
-    agentFragments = extractAgentContent(
-      agent as unknown as Parameters<typeof extractAgentContent>[0],
-    );
+    agentFragments = extractAgentContent(agentDefinitionInput);
   } catch (error) {
     if (!isContentTraversalLimitError(error)) {
       throw error;
@@ -2288,23 +2325,13 @@ export async function initializeAgent(
    * same way inline instructions are. A link without a resolver, or one that
    * resolves to `unavailable`, continues the turn with empty instructions
    * rather than failing initialization — the inline-text fallback is AI-2150.
+   * The resolution itself started well above, in parallel with everything
+   * between; this only awaits it.
    */
   let instructionsPromptFacts: LinkedInstructionsFacts | undefined;
-  const instructionsPromptLink =
-    agent.instructionsPrompt != null &&
-    agent.instructionsPrompt.source === 'native' &&
-    'groupId' in agent.instructionsPrompt
-      ? (agent.instructionsPrompt as AgentInstructionsPrompt)
-      : undefined;
   if (instructionsPromptLink) {
-    if (params.resolveLinkedInstructions) {
-      const linkedResult = await params.resolveLinkedInstructions({
-        link: instructionsPromptLink,
-        signal: params.signal,
-        filters: appConfig?.filters,
-        config: appConfig?.endpoints?.agents?.linkedInstructions,
-        recordUsage: params.recordLinkedPromptUsage ?? true,
-      });
+    if (linkedInstructionsPromise) {
+      const linkedResult = await linkedInstructionsPromise;
       if (linkedResult.status === 'resolved') {
         agent.instructions = linkedResult.prompt;
         instructionsPromptFacts = linkedResult.facts;
@@ -2611,6 +2638,19 @@ export async function initializeAgent(
     endpointTokenConfig: options.endpointTokenConfig,
     instructionsPromptFacts,
   };
+
+  /**
+   * Usage is recorded only once initialization has fully succeeded — every
+   * step above (tool loading, resource priming, provider setup) has already
+   * run without throwing. A resolved link with no `instructionsPromptFacts`
+   * never reaches here; an initialization that throws after resolution never
+   * reaches here either, so it records no use. Fire-and-forget: the turn
+   * does not wait on the increment, and `recordUse` itself catches and logs
+   * its own errors.
+   */
+  if (instructionsPromptFacts && (params.recordLinkedPromptUsage ?? true)) {
+    params.resolveLinkedInstructions?.recordUse(instructionsPromptFacts);
+  }
 
   return initializedAgent;
 }
