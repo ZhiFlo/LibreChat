@@ -2315,6 +2315,8 @@ async function loadToolsForExecution({
                 codeExecutionContext.codeEnvironmentConfigSchema,
                 codeExecutionContext.codeWorkspace?.maxCommandTimeoutMs,
               ),
+              defaultTimeoutMs:
+                codeExecutionContext.codeEnvironmentConfigSchema?.limits?.defaultCommandTimeoutMs,
               maxQueueWaitMs: resolveAttachedWorkspaceQueueWaitMs(
                 codeExecutionContext.codeEnvironmentConfigSchema,
               ),

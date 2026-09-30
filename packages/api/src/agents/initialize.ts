@@ -102,14 +102,18 @@ import {
   normalizeAgentToolKeys,
 } from '~/mcp/utils';
 import {
+  resolveAttachedWorkspaceCommandTimeoutMax,
+  resolveAttachedWorkspaceCommandTimeoutDefault,
+} from '~/code/command';
+import {
   createStatefulCodeEnvironmentPolicyError,
   isFatalAgentInitializationError,
 } from './errors';
 import { extractAgentContent, extractSkillContent } from '../protection/adapters/submissions';
 import { createConfiguredContentInspector, inspectContent } from '../protection/runtime';
 import { assertAgentAttachmentLimits, isModelBoundAttachmentFile } from './attachments';
-import { resolveAttachedWorkspaceCommandTimeoutMax } from '~/code/command';
 import { assertModelBoundContent } from '../middleware/modelBoundContent';
+import { resolveAttachedWorkspaceReadFileLines } from '~/code/workspace';
 import { isImplicitStatefulCodeRouteAvailable } from '../code/config';
 import { registerMemoryTools, memoryToolUsageGuard } from './memory';
 import { applyIntentLabels, sanitizeIntentLabels } from './intent';
@@ -2002,6 +2006,19 @@ export async function initializeAgent(
           trustedCodeExecutionContext.codeWorkspace?.maxCommandTimeoutMs,
         )
       : undefined;
+  const attachedWorkspaceCommandTimeoutDefaultMs =
+    trustedCodeExecutionContext.environmentType === 'attached'
+      ? resolveAttachedWorkspaceCommandTimeoutDefault(
+          trustedCodeExecutionContext.codeEnvironmentConfigSchema?.limits?.defaultCommandTimeoutMs,
+          attachedWorkspaceCommandTimeoutMaxMs,
+        )
+      : undefined;
+  const attachedWorkspaceReadFileDefaultLines =
+    trustedCodeExecutionContext.environmentType === 'attached'
+      ? resolveAttachedWorkspaceReadFileLines(
+          trustedCodeExecutionContext.codeEnvironmentConfigSchema,
+        )
+      : undefined;
   if (
     attachedWorkspaceOperations &&
     !attachedWorkspaceOperations.has('preview_edit') &&
@@ -2085,6 +2102,8 @@ export async function initializeAgent(
       workspaceTools: attachedWorkspaceTools,
       workspaceOperations: attachedWorkspaceOperations,
       workspaceCommandTimeoutMaxMs: attachedWorkspaceCommandTimeoutMaxMs,
+      workspaceCommandTimeoutDefaultMs: attachedWorkspaceCommandTimeoutDefaultMs,
+      workspaceReadFileDefaultLines: attachedWorkspaceReadFileDefaultLines,
       workspaceEnvironment: trustedCodeExecutionContext.codeWorkspace?.environment,
       workspaceLinkedWorktrees: trustedCodeExecutionContext.codeWorkspace?.linkedWorktrees,
     });
@@ -2138,6 +2157,8 @@ export async function initializeAgent(
       workspaceTools: attachedWorkspaceTools,
       workspaceOperations: attachedWorkspaceOperations,
       workspaceCommandTimeoutMaxMs: attachedWorkspaceCommandTimeoutMaxMs,
+      workspaceCommandTimeoutDefaultMs: attachedWorkspaceCommandTimeoutDefaultMs,
+      workspaceReadFileDefaultLines: attachedWorkspaceReadFileDefaultLines,
     });
     toolDefinitions = skillReadResult.toolDefinitions;
     recordCapabilityToolNames(AgentCapabilities.skills, skillReadResult.toolNames);
@@ -2331,6 +2352,8 @@ export async function initializeAgent(
       workspaceOperations: attachedWorkspaceOperations,
       userId: user?.id,
       workspaceCommandTimeoutMaxMs: attachedWorkspaceCommandTimeoutMaxMs,
+      workspaceCommandTimeoutDefaultMs: attachedWorkspaceCommandTimeoutDefaultMs,
+      workspaceReadFileDefaultLines: attachedWorkspaceReadFileDefaultLines,
       workspaceEnvironment: trustedCodeExecutionContext.codeWorkspace?.environment,
       workspaceLinkedWorktrees: trustedCodeExecutionContext.codeWorkspace?.linkedWorktrees,
       skillStates: params.skillStates,

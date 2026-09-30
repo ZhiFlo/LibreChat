@@ -99,6 +99,12 @@ import {
   isFileResourceToolName,
 } from './tools';
 import {
+  resolveAttachedWorkspaceReadFileLines,
+  WorkspaceToolHttpError,
+  WORKSPACE_EDIT_MAX_COUNT,
+  WORKSPACE_WRITE_MAX_BYTES,
+} from '~/code/workspace';
+import {
   BACKGROUND_TASK_ABORT_GRACE_MS,
   BACKGROUND_TASK_SHUTDOWN_MESSAGE,
   BACKGROUND_TOOL_PRODUCER_HEARTBEAT_MS,
@@ -116,11 +122,6 @@ import {
   contentFilterModelBoundBlockResponse,
   isContentFilterError,
 } from '~/middleware/contentFilter';
-import {
-  WorkspaceToolHttpError,
-  WORKSPACE_EDIT_MAX_COUNT,
-  WORKSPACE_WRITE_MAX_BYTES,
-} from '~/code/workspace';
 import {
   resolveAttachedWorkspaceQueueWaitMs,
   resolveAttachedWorkspaceRequestTimeoutMs,
@@ -2615,7 +2616,9 @@ async function handleWorkspaceFileRead(
   if (!workspaceId) return unavailableWorkspaceOperation(tc, 'read_file');
   const args = tc.args as { start_line?: number; max_lines?: number };
   const startLine = args.start_line ?? 1;
-  const maxLines = args.max_lines ?? 200;
+  const maxLines =
+    args.max_lines ??
+    resolveAttachedWorkspaceReadFileLines(codeExecutionContext.codeEnvironmentConfigSchema);
   if (filePath.length === 0) {
     return {
       toolCallId: tc.id,

@@ -2983,6 +2983,7 @@ describe('ToolService - Action Capability Gating', () => {
         codeEnvironmentConfigSchema: {
           limits: {
             maxCommandTimeoutMs: 80_000,
+            defaultCommandTimeoutMs: 60_000,
             maxQueueWaitMs: 0,
             maxRequestTimeoutMs: 90_000,
             minCommandAdmissionMs: 15_000,
@@ -3014,6 +3015,7 @@ describe('ToolService - Action Capability Gating', () => {
         workspaceId: 'project-a',
         gitIdentity: { name: 'LibreChat Agent', email: 'agent@example.com' },
         maxTimeoutMs: 65_000,
+        defaultTimeoutMs: 60_000,
         maxQueueWaitMs: 0,
         codeApiMaxRetryWaitMs: 0,
         maxRequestTimeoutMs: 90_000,
