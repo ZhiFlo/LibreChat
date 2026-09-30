@@ -5444,6 +5444,27 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         });
         expect(await Agent.countDocuments()).toBe(0);
       });
+
+      test('excludes the submitted (now-dead) inline instructions from the save-time scan when a safe link is set', async () => {
+        const { groupId } = await createPromptGroupFixture('Create Scan Safe Group');
+        mockGroupVisibility(new Set([groupId]));
+        mockReq.config = {
+          filters: { agentInstructions: { pii: { starterPatterns: ['sk_prefix'] } } },
+        };
+        mockReq.body = {
+          name: 'Linked At Creation',
+          provider: 'openai',
+          model: 'gpt-4',
+          instructions: 'Use sk-private-token for requests',
+          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+        };
+
+        await createAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(201);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.instructionsPrompt.groupId).toBe(groupId);
+      });
     });
 
     describe('updateAgentHandler', () => {
@@ -5724,6 +5745,90 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         const response = mockRes.json.mock.calls[0][0];
         expect(response.versions[0].instructionsPrompt).toEqual(versionInstructionsPrompt);
       });
+
+      describe('save-time content scan when a link governs the agent', () => {
+        const blockedInstructions = 'Use sk-private-token for requests';
+        const blockedFilters = {
+          agentInstructions: { pii: { starterPatterns: ['sk_prefix'] } },
+        };
+
+        test('excludes the stored (now-dead) inline instructions from the scan when switching to a safe link', async () => {
+          const { groupId } = await createPromptGroupFixture('Scan Safe Group');
+          mockGroupVisibility(new Set([groupId]));
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Switching Agent',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructions: blockedInstructions,
+          });
+
+          mockReq.config = { filters: blockedFilters };
+          mockReq.params = { id: agent.id };
+          mockReq.body = {
+            instructions: blockedInstructions,
+            instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+          };
+
+          await updateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).not.toHaveBeenCalledWith(400);
+          expect(mockRes.status).not.toHaveBeenCalledWith(403);
+          const persisted = await Agent.findOne({ id: agent.id }).lean();
+          expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+          // The inline text is stored as submitted; only the scan ignored it.
+          expect(persisted.instructions).toBe(blockedInstructions);
+        });
+
+        test('still rejects switching back to Inline while the stored inline text is blocked', async () => {
+          const { groupId } = await createPromptGroupFixture('Scan Safe Group Two');
+          mockGroupVisibility(new Set([groupId]));
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Switching Back Agent',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructions: blockedInstructions,
+            instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+          });
+
+          mockReq.config = { filters: blockedFilters };
+          mockReq.params = { id: agent.id };
+          mockReq.body = { instructions: blockedInstructions, instructionsPrompt: null };
+
+          await updateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).toHaveBeenCalledWith(400);
+          const persisted = await Agent.findOne({ id: agent.id }).lean();
+          expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+          expect(persisted.instructions).toBe(blockedInstructions);
+        });
+
+        test('still rejects blocked inline text on an agent with no link at all', async () => {
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Unlinked Agent',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+          });
+
+          mockReq.config = { filters: blockedFilters };
+          mockReq.params = { id: agent.id };
+          mockReq.body = { instructions: blockedInstructions };
+
+          await updateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).toHaveBeenCalledWith(400);
+          const persisted = await Agent.findOne({ id: agent.id }).lean();
+          expect(persisted.instructions).toBeUndefined();
+        });
+      });
     });
 
     describe('getAgentHandler', () => {
@@ -5860,6 +5965,43 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         const newAgentId = response.agent.id;
         const persisted = await Agent.findOne({ id: newAgentId }).lean();
         expect(persisted.instructionsPrompt).toEqual(instructionsPrompt);
+      });
+
+      test('fails closed (201 with a restricted stub, never a 500) when the post-duplicate ACL lookup fails, and creates exactly one duplicate', async () => {
+        const { groupId } = await createPromptGroupFixture();
+        const instructionsPrompt = {
+          source: 'native',
+          groupId,
+          selection: { type: 'production' },
+        };
+        await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Source Agent Three',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt,
+        });
+        expect(await Agent.countDocuments({})).toBe(1);
+
+        // The duplicate has already been persisted (with its cloned actions and
+        // grants) by the time `presentForEditor` runs; a failure here must not
+        // surface as a 500 — a client retry on that 500 would create another
+        // duplicate against a write that already succeeded.
+        getResourcePermissionsMap.mockImplementation(async () => {
+          throw new Error('acl outage');
+        });
+
+        mockReq.params = { id: (await Agent.findOne({ name: 'Source Agent Three' })).id };
+
+        await duplicateAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(201);
+        expect(mockRes.status).not.toHaveBeenCalledWith(500);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.agent.instructionsPrompt).toEqual({ source: 'native', restricted: true });
+        expect(await Agent.countDocuments({})).toBe(2);
       });
     });
 
@@ -6163,6 +6305,45 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           const persisted = await Agent.findOne({ id: agentId }).lean();
           expect(persisted.instructionsPrompt.groupId).toBe(groupId);
         });
+      });
+
+      test("excludes the reverted snapshot's dead inline instructions from the scan when the snapshot's own link is valid", async () => {
+        const { groupId } = await createPromptGroupFixture('Revert Scan Safe Group');
+        mockGroupVisibility(new Set([groupId]));
+        const blockedInstructions = 'Use sk-private-token for requests';
+        const agentId = `agent_${nanoid()}`;
+        await Agent.create({
+          id: agentId,
+          author: mockReq.user.id,
+          name: 'Current Unlinked Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          versions: [
+            {
+              name: 'Linked Snapshot',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+              instructions: blockedInstructions,
+              instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+            },
+          ],
+        });
+
+        mockReq.config = {
+          filters: { agentInstructions: { pii: { starterPatterns: ['sk_prefix'] } } },
+        };
+        mockReq.params = { id: agentId };
+        mockReq.body = { version_index: 0 };
+
+        await revertAgentVersionHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        const persisted = await Agent.findOne({ id: agentId }).lean();
+        expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+        expect(persisted.instructions).toBe(blockedInstructions);
       });
     });
 

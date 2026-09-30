@@ -6,6 +6,14 @@ import type {
 } from 'librechat-data-provider';
 import type { PromptService } from '~/prompts';
 import { isContentFilterError } from '~/middleware/contentFilter';
+import { getSafeErrorMetadata } from '~/utils/errors';
+
+/** Matches the `logger` shape injected elsewhere in this module family
+ *  (`createLinkedInstructionsResolver`). */
+export interface InstructionsPromptAccessLogger {
+  warn(message: string, meta?: object): void;
+  error(message: string, meta?: object): void;
+}
 
 /** The write-path identity a link permission check runs as. */
 export interface InstructionsPromptAccessUser {
@@ -75,13 +83,21 @@ export interface InstructionsPromptAccess {
    *  distinct linked group into a single permission lookup. A link to a group that no
    *  longer exists is shown as-is instead: there is no group identity left to protect,
    *  and showing it (rather than a stub) is what lets the Builder offer the editor a
-   *  removal or replacement for it. */
+   *  removal or replacement for it.
+   *
+   *  Fails closed: this runs after the write it is presenting has already been
+   *  persisted, so an ACL-lookup or `getPromptGroup` failure here must never
+   *  surface as a 500 (a client retry on that 500 would create another
+   *  duplicate/etc. against the write that already succeeded). On such a
+   *  failure this logs a safe message and returns every link — top-level and
+   *  every version snapshot — as the restricted stub instead of throwing. */
   presentForEditor<T extends AgentWithVersionsCarrier>(input: {
     user: InstructionsPromptAccessUser;
     agent: T;
   }): Promise<T>;
-  /** Same redaction as `presentForEditor`, for a response that returns a version-history
-   *  array directly (`GET /agents/:id/versions`) rather than a wrapping agent document. */
+  /** Same redaction as `presentForEditor`, including the same fail-closed behavior,
+   *  for a response that returns a version-history array directly
+   *  (`GET /agents/:id/versions`) rather than a wrapping agent document. */
   presentVersionsForEditor<T extends AgentInstructionsPromptCarrier>(input: {
     user: InstructionsPromptAccessUser;
     versions: readonly T[];
@@ -137,15 +153,20 @@ function collectLinkGroupIds(
 /**
  * Builds the permission checks that gate reading and writing an agent's linked
  * instructions prompt. Callers (the `/api` write and read handlers) own the HTTP
- * boundary; this module only decides ok/forbidden/restricted/unavailable and throws
- * on unexpected permission or prompt-service failures rather than swallowing them.
+ * boundary; this module only decides ok/forbidden/restricted/unavailable.
+ * `validateLinkWrite` throws on an unexpected permission or prompt-service
+ * failure rather than swallowing it — that check runs before the write lands,
+ * so a 500 there is safe. `presentForEditor` and `presentVersionsForEditor`
+ * run after the write has already been persisted and fail closed instead: see
+ * their own docs below.
  */
 export function createInstructionsPromptAccess(deps: {
   getResourcePermissionsMap: GetResourcePermissionsMap;
   promptService: Pick<PromptService, 'resolvePrompt' | 'getPromptGroup'>;
   assertAgentInstructionsContent: AssertAgentInstructionsContent;
+  logger: InstructionsPromptAccessLogger;
 }): InstructionsPromptAccess {
-  const { getResourcePermissionsMap, promptService, assertAgentInstructionsContent } = deps;
+  const { getResourcePermissionsMap, promptService, assertAgentInstructionsContent, logger } = deps;
 
   /** Whether `groupId` still has a stored group record — a tenant-scoped, ACL-free
    *  read, unlike `canViewGroup`. `deletePromptGroup` removes every ACL entry for a
@@ -222,6 +243,33 @@ export function createInstructionsPromptAccess(deps: {
       return carrier;
     }
     return { ...carrier, instructionsPrompt: RESTRICTED_STUB };
+  }
+
+  /** Unconditional stub, used only on the fail-closed path below: every link is
+   *  hidden because whether it may be shown could not be determined. */
+  function stubLink<T extends AgentInstructionsPromptCarrier>(carrier: T): T {
+    return carrier.instructionsPrompt == null
+      ? carrier
+      : { ...carrier, instructionsPrompt: RESTRICTED_STUB };
+  }
+
+  /** Content-free failure log shared by every fail-closed path below. */
+  function logAuthorizationFailure(error: unknown): void {
+    logger.error(
+      '[createInstructionsPromptAccess] Failed to authorize a linked instructions prompt for an EDIT-scoped response; presenting every link as restricted',
+      getSafeErrorMetadata(error),
+    );
+  }
+
+  /** Logs and reports back with no group identity — every top-level and
+   *  versioned link on `agent` becomes the restricted stub. */
+  function failClosed<T extends AgentWithVersionsCarrier>(error: unknown, agent: T): T {
+    logAuthorizationFailure(error);
+    const versions = agent.versions;
+    return {
+      ...stubLink(agent),
+      ...(versions == null ? {} : { versions: versions.map((version) => stubLink(version)) }),
+    };
   }
 
   async function validateLinkWrite({
@@ -316,7 +364,12 @@ export function createInstructionsPromptAccess(deps: {
     if (groupIds.length === 0) {
       return agent;
     }
-    const redact = await buildRedactionSet(user, groupIds);
+    let redact: ReadonlySet<string>;
+    try {
+      redact = await buildRedactionSet(user, groupIds);
+    } catch (error) {
+      return failClosed(error, agent);
+    }
     const topLevelLink = agent.instructionsPrompt;
     const topLevelRedacted =
       topLevelLink != null && !isRestrictedStub(topLevelLink) && redact.has(topLevelLink.groupId);
@@ -349,7 +402,13 @@ export function createInstructionsPromptAccess(deps: {
     if (groupIds.length === 0) {
       return versions as T[];
     }
-    const redact = await buildRedactionSet(user, groupIds);
+    let redact: ReadonlySet<string>;
+    try {
+      redact = await buildRedactionSet(user, groupIds);
+    } catch (error) {
+      logAuthorizationFailure(error);
+      return versions.map((version) => stubLink(version));
+    }
     return versions.map((version) => redactIfHidden(version, redact));
   }
 

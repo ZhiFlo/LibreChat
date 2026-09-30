@@ -53,6 +53,7 @@ function buildAccess({
   getPromptGroup?: jest.Mock;
   assertAgentInstructionsContent?: jest.Mock;
 } = {}) {
+  const logger = { warn: jest.fn(), error: jest.fn() };
   const map = jest.fn(async ({ resourceIds }: { resourceIds: string[] }) => {
     const result = new Map<string, number>();
     for (const id of resourceIds) {
@@ -86,6 +87,7 @@ function buildAccess({
       getPromptGroup: getPromptGroup ?? getGroup,
     },
     assertAgentInstructionsContent: assertContent,
+    logger,
   });
   return {
     access,
@@ -93,6 +95,7 @@ function buildAccess({
     resolve: resolvePrompt ?? resolve,
     getGroup: getPromptGroup ?? getGroup,
     assertContent,
+    logger,
   };
 }
 
@@ -579,14 +582,63 @@ describe('createInstructionsPromptAccess', () => {
       expect(map).not.toHaveBeenCalled();
     });
 
-    it('propagates a thrown permission-service error', async () => {
+    it('fails closed on a thrown permission-service error: stubs the link and logs, never throws', async () => {
+      const { access, logger } = buildAccess({
+        getResourcePermissionsMap: jest.fn(async () => {
+          throw new Error('acl outage');
+        }),
+      });
+      const agent = { id: 'a1', name: 'Agent', instructionsPrompt: otherGroupLink };
+      const result = await access.presentForEditor({ user, agent });
+      expect(result).toEqual({
+        id: 'a1',
+        name: 'Agent',
+        instructionsPrompt: { source: 'native', restricted: true },
+      });
+      expect(logger.error).toHaveBeenCalledTimes(1);
+      const [message, meta] = logger.error.mock.calls[0];
+      expect(message).toContain('[createInstructionsPromptAccess]');
+      expect(JSON.stringify(meta)).not.toContain('acl outage');
+    });
+
+    it('fails closed on a thrown existence-check (getPromptGroup) error', async () => {
+      const { access, logger } = buildAccess({
+        getPromptGroup: jest.fn(async () => {
+          throw new Error('prompt store outage');
+        }),
+      });
+      const agent = { id: 'a1', instructionsPrompt: otherGroupLink };
+      const result = await access.presentForEditor({ user, agent });
+      expect(result).toEqual({
+        id: 'a1',
+        instructionsPrompt: { source: 'native', restricted: true },
+      });
+      expect(logger.error).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails closed across both the top-level link and every version snapshot', async () => {
       const { access } = buildAccess({
         getResourcePermissionsMap: jest.fn(async () => {
           throw new Error('acl outage');
         }),
       });
-      const agent = { id: 'a1', instructionsPrompt: otherGroupLink };
-      await expect(access.presentForEditor({ user, agent })).rejects.toThrow('acl outage');
+      const agent = {
+        id: 'a1',
+        instructionsPrompt: productionLink,
+        versions: [
+          { name: 'v1', instructionsPrompt: otherGroupLink },
+          { name: 'v2', instructionsPrompt: null },
+        ],
+      };
+      const result = await access.presentForEditor({ user, agent });
+      expect(result).toEqual({
+        id: 'a1',
+        instructionsPrompt: { source: 'native', restricted: true },
+        versions: [
+          { name: 'v1', instructionsPrompt: { source: 'native', restricted: true } },
+          { name: 'v2', instructionsPrompt: null },
+        ],
+      });
     });
 
     it('shows a link to a deleted group as-is instead of stubbing it — nothing left to protect', async () => {
@@ -742,16 +794,22 @@ describe('createInstructionsPromptAccess', () => {
       expect(result).toEqual(versions);
     });
 
-    it('propagates a thrown permission-service error', async () => {
-      const { access } = buildAccess({
+    it('fails closed on a thrown permission-service error: stubs every link and logs, never throws', async () => {
+      const { access, logger } = buildAccess({
         getResourcePermissionsMap: jest.fn(async () => {
           throw new Error('acl outage');
         }),
       });
-      const versions = [{ name: 'v1', instructionsPrompt: otherGroupLink }];
-      await expect(access.presentVersionsForEditor({ user, versions })).rejects.toThrow(
-        'acl outage',
-      );
+      const versions = [
+        { name: 'v1', instructionsPrompt: otherGroupLink },
+        { name: 'v2', instructionsPrompt: null },
+      ];
+      const result = await access.presentVersionsForEditor({ user, versions });
+      expect(result).toEqual([
+        { name: 'v1', instructionsPrompt: { source: 'native', restricted: true } },
+        { name: 'v2', instructionsPrompt: null },
+      ]);
+      expect(logger.error).toHaveBeenCalledTimes(1);
     });
   });
 });

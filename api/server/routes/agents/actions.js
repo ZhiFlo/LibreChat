@@ -40,16 +40,13 @@ const { canAccessAgentResource } = require('~/server/middleware');
 
 const router = express.Router();
 
-/** Same wiring as `controllers/agents/v1.js`: the write-path decision logic lives in
- *  `@librechat/api`'s `createInstructionsPromptAccess`. This route only reads an
- *  existing link (`presentForEditor`) before the updated agent reaches the client's
- *  expanded-agent cache; it never validates a write of `instructionsPrompt` because
- *  this route cannot change it. */
+// Same wiring as `controllers/agents/v1.js`; this route only reads a link (`presentForEditor`).
 const instructionsPromptAccess = createInstructionsPromptAccess({
   getResourcePermissionsMap,
   promptService: createPromptService({ db, grantPermission }),
   assertAgentInstructionsContent: ({ instructions, filters }) =>
     assertModelBoundContent({ filters, agents: [{ instructions }] }),
+  logger,
 });
 
 async function deleteActionOAuthTokens(action_id) {
