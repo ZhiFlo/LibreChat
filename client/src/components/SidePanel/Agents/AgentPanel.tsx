@@ -29,6 +29,11 @@ import {
   useUploadAgentAvatarMutation,
 } from '~/data-provider';
 import {
+  isRestrictedInstructionsPrompt,
+  getInstructionsPromptErrorCode,
+  instructionsPromptErrorKeys,
+} from './instructionsPromptUtils';
+import {
   createProviderOption,
   getAvailableAgentSelection,
   getDefaultAgentFormValues,
@@ -68,18 +73,25 @@ function getUpdateToastMessage(
  * Handles avatar reset requests for persistent agents independently of avatar uploads.
  * @param {AgentForm} data - Form data from the agent configuration form.
  * @param {string | null} [agent_id] - Agent identifier, if the agent already exists.
+ * @param {AgentParameterConfig} [parameterConfig] - Model parameter schema context.
+ * @param {{ instructionsPromptChanged: boolean }} flags - Whether the linked-prompt
+ *   selection changed, so the field is sent only on an actual edit. Required, with no
+ *   default, so a caller can never silently overwrite a stored link.
  * @returns {{ payload: Partial<AgentForm>; provider: string; model: string }} Payload metadata.
  */
 export function composeAgentUpdatePayload(
   data: AgentForm,
-  agent_id?: string | null,
-  parameterConfig?: AgentParameterConfig,
+  agent_id: string | null | undefined,
+  parameterConfig: AgentParameterConfig | undefined,
+  flags: { instructionsPromptChanged: boolean },
 ) {
   const {
     name,
     artifacts,
     description,
     instructions,
+    instructionsSource,
+    instructionsPrompt,
     model: _model,
     model_parameters: currentModelParameters,
     provider: _provider,
@@ -105,6 +117,12 @@ export function composeAgentUpdatePayload(
     memory_scope,
     avatar_action: avatarActionState,
   } = data;
+
+  /** Never re-sends the restricted stub; a real link only exists in `'prompt'` mode. */
+  const resolvedInstructionsPrompt =
+    instructionsSource === 'prompt' && !isRestrictedInstructionsPrompt(instructionsPrompt)
+      ? (instructionsPrompt ?? null)
+      : null;
 
   /* stateful_code_sessions requires Code Interpreter; force it off on save when
    * execute_code is disabled so a stale opt-in can't silently reactivate later. */
@@ -152,6 +170,9 @@ export function composeAgentUpdatePayload(
       artifacts,
       description,
       instructions,
+      ...(flags.instructionsPromptChanged
+        ? { instructionsPrompt: resolvedInstructionsPrompt }
+        : {}),
       model,
       provider,
       model_parameters,
@@ -565,6 +586,14 @@ export default function AgentPanel() {
       submittedRef.current = {};
     },
     onError: (err) => {
+      const instructionsPromptErrorCode = getInstructionsPromptErrorCode(err);
+      if (instructionsPromptErrorCode) {
+        showToast({
+          message: localize(instructionsPromptErrorKeys[instructionsPromptErrorCode]),
+          status: 'error',
+        });
+        return;
+      }
       const error = err as Error;
       showToast({
         message: `${localize('com_agents_update_error')}${
@@ -595,6 +624,14 @@ export default function AgentPanel() {
       }
     },
     onError: (err) => {
+      const instructionsPromptErrorCode = getInstructionsPromptErrorCode(err);
+      if (instructionsPromptErrorCode) {
+        showToast({
+          message: localize(instructionsPromptErrorKeys[instructionsPromptErrorCode]),
+          status: 'error',
+        });
+        return;
+      }
       const error = err as Error;
       showToast({
         message: `${localize('com_agents_create_error')}${
@@ -609,14 +646,18 @@ export default function AgentPanel() {
     async (data: AgentForm) => {
       const tools = Array.from(new Set([...(data.tools ?? []), ...resolveCapabilityTools(data)]));
 
+      const instructionsPromptChanged =
+        dirtyFields.instructionsPrompt === true || dirtyFields.instructionsSource === true;
       const {
         payload: basePayload,
         provider,
         model,
-      } = composeAgentUpdatePayload(data, agent_id, {
-        endpointsConfig,
-        startupConfig,
-      });
+      } = composeAgentUpdatePayload(
+        data,
+        agent_id,
+        { endpointsConfig, startupConfig },
+        { instructionsPromptChanged },
+      );
 
       if (agent_id) {
         if (data.avatar_action === 'upload' && isAvatarUploadOnlyDirty(dirtyFields)) {

@@ -30,6 +30,8 @@ const createForm = (): AgentForm => ({
   name: 'Agent',
   description: null,
   instructions: null,
+  instructionsSource: 'inline',
+  instructionsPrompt: null,
   model: 'gpt-4',
   model_parameters: {
     temperature: 1,
@@ -63,7 +65,9 @@ describe('composeAgentUpdatePayload', () => {
     const form = createForm();
     form.avatar_action = 'reset';
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.avatar).toBeNull();
   });
@@ -72,7 +76,9 @@ describe('composeAgentUpdatePayload', () => {
     const form = createForm();
     form.avatar_action = 'reset';
 
-    const { payload } = composeAgentUpdatePayload(form, Constants.EPHEMERAL_AGENT_ID);
+    const { payload } = composeAgentUpdatePayload(form, Constants.EPHEMERAL_AGENT_ID, undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.avatar).toBeUndefined();
   });
@@ -81,7 +87,9 @@ describe('composeAgentUpdatePayload', () => {
     const form = createForm();
     form.avatar_action = 'upload';
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.avatar).toBeUndefined();
   });
@@ -91,7 +99,9 @@ describe('composeAgentUpdatePayload', () => {
     form.execute_code = false;
     form.stateful_code_sessions = true;
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.stateful_code_sessions).toBe(false);
   });
@@ -103,7 +113,9 @@ describe('composeAgentUpdatePayload', () => {
       search: { allowed_callers: ['code_execution'], defer_loading: true },
     };
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.tool_options).toEqual({ search: { defer_loading: true } });
   });
@@ -115,7 +127,9 @@ describe('composeAgentUpdatePayload', () => {
       search: { allowed_callers: ['code_execution'] },
     };
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.tool_options).toEqual({
       search: { allowed_callers: ['code_execution'] },
@@ -127,7 +141,9 @@ describe('composeAgentUpdatePayload', () => {
     form.execute_code = true;
     form.stateful_code_sessions = true;
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.stateful_code_sessions).toBe(true);
   });
@@ -137,7 +153,9 @@ describe('composeAgentUpdatePayload', () => {
     form.execute_code = true;
     form.stateful_code_sessions = true;
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.stateful_code_environment).toBe('user');
   });
@@ -148,7 +166,9 @@ describe('composeAgentUpdatePayload', () => {
     form.stateful_code_sessions = true;
     form.stateful_code_environment = 'agent-user';
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.stateful_code_environment).toBe('agent-user');
   });
@@ -157,7 +177,9 @@ describe('composeAgentUpdatePayload', () => {
     const form = createForm();
     form.code_environment_id = null;
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.code_environment_id).toBeNull();
   });
@@ -166,7 +188,9 @@ describe('composeAgentUpdatePayload', () => {
     const form = createForm();
     form.code_environment_id = null;
 
-    const { payload } = composeAgentUpdatePayload(form);
+    const { payload } = composeAgentUpdatePayload(form, undefined, undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.code_environment_id).toBeUndefined();
   });
@@ -175,7 +199,9 @@ describe('composeAgentUpdatePayload', () => {
     const form = createForm();
     form.git_identity = { name: '  Coding Agent  ', email: '  agent@example.com  ' };
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.git_identity).toEqual({
       name: 'Coding Agent',
@@ -187,7 +213,9 @@ describe('composeAgentUpdatePayload', () => {
     const form = createForm();
     form.git_identity = { name: '', email: '' };
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.git_identity).toBeNull();
   });
@@ -196,7 +224,9 @@ describe('composeAgentUpdatePayload', () => {
     const form = createForm();
     form.git_identity = { name: 'Coding Agent', email: '' };
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.git_identity).toEqual({ name: 'Coding Agent', email: '' });
   });
@@ -205,7 +235,9 @@ describe('composeAgentUpdatePayload', () => {
     const form = createForm();
     form.git_identity = { name: '', email: '' };
 
-    const { payload } = composeAgentUpdatePayload(form);
+    const { payload } = composeAgentUpdatePayload(form, undefined, undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.git_identity).toBeUndefined();
   });
@@ -216,7 +248,9 @@ describe('composeAgentUpdatePayload', () => {
     form.skills_enabled = false;
     form.skill_authoring_enabled = true;
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.skills_enabled).toBe(false);
     expect(payload.skill_authoring_enabled).toBe(true);
@@ -245,10 +279,12 @@ describe('composeAgentUpdatePayload', () => {
         topK: 40,
       };
       form.model_parameters = stored;
-      const { payload } = composeAgentUpdatePayload(form, 'agent_123', {
-        endpointsConfig: {},
-        startupConfig: {},
-      });
+      const { payload } = composeAgentUpdatePayload(
+        form,
+        'agent_123',
+        { endpointsConfig: {}, startupConfig: {} },
+        { instructionsPromptChanged: false },
+      );
       expect(payload.model_parameters).toEqual(form.model_parameters);
       expect(JSON.parse(JSON.stringify(payload)).model_parameters).toEqual(form.model_parameters);
     },
@@ -259,12 +295,17 @@ describe('composeAgentUpdatePayload', () => {
     form.provider = EModelEndpoint.openAI;
     form.model_parameters.model = 'deployment-override';
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123', {
-      endpointsConfig: {},
-      startupConfig: {
-        endpointsDropParamsMap: { [EModelEndpoint.openAI]: ['topP'] },
+    const { payload } = composeAgentUpdatePayload(
+      form,
+      'agent_123',
+      {
+        endpointsConfig: {},
+        startupConfig: {
+          endpointsDropParamsMap: { [EModelEndpoint.openAI]: ['topP'] },
+        },
       },
-    });
+      { instructionsPromptChanged: false },
+    );
 
     expect(payload.model_parameters?.temperature).toBe(1);
     expect(payload.model_parameters?.top_p).toBeUndefined();
@@ -275,12 +316,110 @@ describe('composeAgentUpdatePayload', () => {
     const form = createForm();
     form.provider = 'removed-provider';
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123', {
-      endpointsConfig: {},
-      startupConfig: {},
-    });
+    const { payload } = composeAgentUpdatePayload(
+      form,
+      'agent_123',
+      { endpointsConfig: {}, startupConfig: {} },
+      { instructionsPromptChanged: false },
+    );
 
     expect(payload.model_parameters).toEqual(form.model_parameters);
+  });
+});
+
+describe('composeAgentUpdatePayload instructionsPrompt', () => {
+  it('omits instructionsPrompt for an unlinked agent left in the default inline mode', () => {
+    const form = createForm();
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
+
+    expect(payload).not.toHaveProperty('instructionsPrompt');
+  });
+
+  it('omits instructionsPrompt when the link did not change', () => {
+    const form = createForm();
+    form.instructionsSource = 'prompt';
+    form.instructionsPrompt = {
+      source: 'native',
+      groupId: 'group_1',
+      selection: { type: 'production' },
+    };
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
+
+    expect(payload).not.toHaveProperty('instructionsPrompt');
+  });
+
+  it('sends the link with a Production selection when changed', () => {
+    const form = createForm();
+    form.instructionsSource = 'prompt';
+    form.instructionsPrompt = {
+      source: 'native',
+      groupId: 'group_1',
+      selection: { type: 'production' },
+    };
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: true,
+    });
+
+    expect(payload.instructionsPrompt).toEqual({
+      source: 'native',
+      groupId: 'group_1',
+      selection: { type: 'production' },
+    });
+  });
+
+  it('sends the link with an exact selection when a specific version is chosen', () => {
+    const form = createForm();
+    form.instructionsSource = 'prompt';
+    form.instructionsPrompt = {
+      source: 'native',
+      groupId: 'group_1',
+      selection: { type: 'exact', promptId: 'prompt_7' },
+    };
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: true,
+    });
+
+    expect(payload.instructionsPrompt).toEqual({
+      source: 'native',
+      groupId: 'group_1',
+      selection: { type: 'exact', promptId: 'prompt_7' },
+    });
+  });
+
+  it('sends null when switching a linked agent back to inline', () => {
+    const form = createForm();
+    form.instructionsSource = 'inline';
+    form.instructionsPrompt = {
+      source: 'native',
+      groupId: 'group_1',
+      selection: { type: 'production' },
+    };
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: true,
+    });
+
+    expect(payload.instructionsPrompt).toBeNull();
+  });
+
+  it('never re-sends the restricted stub, even if a caller marks it changed', () => {
+    const form = createForm();
+    form.instructionsSource = 'prompt';
+    form.instructionsPrompt = { source: 'native', restricted: true };
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: true,
+    });
+
+    expect(payload.instructionsPrompt).toBeNull();
   });
 });
 

@@ -52,6 +52,8 @@ export const getDefaultAgentFormValues = (
   avatar_file: null,
   avatar_preview: '',
   avatar_action: null,
+  instructionsSource: 'inline' as const,
+  instructionsPrompt: null,
 });
 
 export const processAgentOption = ({

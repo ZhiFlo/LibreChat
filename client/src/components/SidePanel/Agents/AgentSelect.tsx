@@ -115,6 +115,8 @@ function AgentSelect({
         repositoryInstructions: fullAgent.repositoryInstructions,
         code_workspace_id: fullAgent.code_workspace_id,
         git_identity: fullAgent.git_identity,
+        instructionsSource: fullAgent.instructionsPrompt != null ? 'prompt' : 'inline',
+        instructionsPrompt: fullAgent.instructionsPrompt ?? null,
       };
 
       Object.entries(fullAgent).forEach(([name, value]) => {
