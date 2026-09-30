@@ -182,13 +182,11 @@ export default function InstructionsPromptFields() {
               {localize('com_agents_instructions_prompt_empty')}
             </div>
           );
-        } else if (linkedGroupMissing) {
-          groupField = (
-            <div className={fieldWrapperClass} role="note">
-              {localize('com_agents_instructions_prompt_not_found')}
-            </div>
-          );
         } else {
+          /** A missing link still gets the combobox, not just the hint below it: the
+           *  backend allows removing or replacing a link to a deleted group, so the user
+           *  needs a way to pick a replacement (or switch to Inline) rather than being
+           *  stuck with prose and no control. */
           groupField = (
             <ControlCombobox
               selectId="instructions-prompt-group"
@@ -215,11 +213,19 @@ export default function InstructionsPromptFields() {
               >
                 {localize('com_ui_prompt')}
               </Label>
-              {/* `aria-labelledby`, not `htmlFor`: the loading/error/empty/not-found
+              {/* `aria-labelledby`, not `htmlFor`: the loading/error/empty
                * states render a plain `div`, not the combobox `id` a `for` would need. */}
               <div role="group" aria-labelledby="instructions-prompt-group-label">
                 {groupField}
               </div>
+              {linkedGroupMissing && (
+                <span
+                  className="mt-1 text-xs text-text-secondary transition duration-300 ease-in-out"
+                  role="note"
+                >
+                  {localize('com_agents_instructions_prompt_not_found')}
+                </span>
+              )}
               {error && (
                 <span
                   className="mt-1 text-xs text-text-destructive transition duration-300 ease-in-out"

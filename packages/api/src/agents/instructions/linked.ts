@@ -3,11 +3,29 @@ import type {
   FiltersConfig,
   AgentInstructionsPrompt,
   AgentInstructionsPromptSelection,
+  RestrictedAgentInstructionsPrompt,
 } from 'librechat-data-provider';
 import type { PromptService, ResolvedPrompt } from '~/prompts';
 import { assertModelBoundContent } from '~/middleware/modelBoundContent';
-import { ContentFilterError } from '~/middleware/contentFilter';
+import { isContentFilterError } from '~/middleware/contentFilter';
 import { inspectPromptContent } from '~/prompts';
+
+/**
+ * Narrows `link` to a resolvable `native` link — the same test
+ * `initializeAgent` uses to decide whether an agent's stored inline
+ * `instructions` are live text or dead text superseded by a link. A
+ * `RestrictedAgentInstructionsPrompt` stub (`{ source: 'native', restricted:
+ * true }`, no `groupId`) is never valid: it never reaches `initializeAgent`
+ * (that shape exists only for an editor without VIEW on the linked group),
+ * so it must not be treated as a link that suppresses inline text elsewhere
+ * either — most importantly in the HITL resume preflight, which inspects a
+ * stored agent snapshot rather than a live `Agent`.
+ */
+export function isValidInstructionsPromptLink(
+  link: AgentInstructionsPrompt | RestrictedAgentInstructionsPrompt | null | undefined,
+): link is AgentInstructionsPrompt {
+  return link != null && link.source === 'native' && 'groupId' in link;
+}
 
 /** Facts about a resolved link, retained on the initialized agent. Never persisted. */
 export type LinkedInstructionsFacts = {
@@ -127,6 +145,14 @@ function mapServiceErrorReason(
  * instructions get at init). Content that only trips the second policy would
  * otherwise reach the model unfiltered, since linked content used to get only
  * the first.
+ *
+ * Uses `isContentFilterError` — the same helper `access.ts` uses to recognize
+ * a content-policy rejection — rather than an `instanceof ContentFilterError`
+ * check, so every content-policy error `assertModelBoundContent` can throw
+ * (including a traversal-limit or uninspectable-file error) maps to
+ * `blocked_content` consistently. An unrecognized error still throws (the
+ * caller, `checkPromptBlocked` below, catches it and maps it to the
+ * resolver's generic `'error'` reason rather than rejecting the resolution).
  */
 function isPromptBlocked(prompt: string, filters: FiltersConfig | undefined): boolean {
   if (inspectPromptContent({ prompt }, filters) != null) {
@@ -136,7 +162,7 @@ function isPromptBlocked(prompt: string, filters: FiltersConfig | undefined): bo
     assertModelBoundContent({ filters, agents: [{ instructions: prompt }] });
     return false;
   } catch (error) {
-    if (error instanceof ContentFilterError) {
+    if (isContentFilterError(error)) {
       return true;
     }
     throw error;
@@ -185,6 +211,14 @@ function remainingMs(deadline: number): number {
   return Math.max(0, deadline - Date.now());
 }
 
+/** Caps the cache-read phase so a hung cache can never consume the whole
+ *  resolution deadline: at most 250ms, or a quarter of `timeoutMs` when that
+ *  is smaller. Whatever remains of `timeoutMs` after this phase — at least
+ *  three quarters of it — is left for `resolvePrompt`. */
+function cacheReadBudgetMs(timeoutMs: number): number {
+  return Math.min(250, timeoutMs / 4);
+}
+
 /**
  * Builds the runtime resolver for an agent's linked native prompt-group
  * instructions.
@@ -199,18 +233,24 @@ function remainingMs(deadline: number): number {
  * moment `resolve` is called), not by re-arming a fresh timeout per phase —
  * a slow or failed cache read spends part of that budget, and only what
  * remains is left for `resolvePrompt`, so the worst case stays ~`timeoutMs`
- * overall instead of doubling. A cache read failure or timeout is logged and
- * treated as a miss (falls through to `resolvePrompt`) rather than failing
- * the turn — a cache outage must not drop instructions. The cache write
- * itself never blocks the caller: it is fire-and-forget (errors caught and
- * logged), issued only when unaborted.
+ * overall instead of doubling. The cache-read phase itself is additionally
+ * capped at `cacheReadBudgetMs` (at most 250ms, or a quarter of `timeoutMs`
+ * when that is smaller) so a *hung* cache read — one that never settles —
+ * cannot consume the entire deadline and starve `resolvePrompt` of its own
+ * chance to run; a cache read failure or timeout is logged and treated as a
+ * miss (falls through to `resolvePrompt`) rather than failing the turn — a
+ * cache outage must not drop instructions. The cache write itself never
+ * blocks the caller: it is fire-and-forget (errors caught and logged),
+ * issued only when unaborted.
  *
  * Abort is checked before work starts and after every await and always
  * throws the signal's abort reason — it is never mapped to an `unavailable`
  * result, and a cancelled call never writes the cache. Failures (timeout on
- * the `resolvePrompt` phase, a thrown adapter error) resolve to
- * `{ status: 'unavailable', reason }`. Logs never include prompt text — only
- * the reason, groupId, and the error's name.
+ * the `resolvePrompt` phase, a thrown adapter error, or an unrecognized error
+ * from the content-policy check) resolve to `{ status: 'unavailable', reason
+ * }` — the resolution is never rejected by anything other than an abort.
+ * Logs never include prompt text — only the reason, groupId, and the error's
+ * name.
  *
  * The returned function never records prompt-group usage itself; call its
  * `.recordUse(facts)` once the caller's own initialization succeeds.
@@ -241,7 +281,8 @@ export function createLinkedInstructionsResolver(
     let cached: CachedLinkedPrompt | undefined;
     if (cacheTtlMs > 0) {
       try {
-        const raw = await runBounded(cache.get(key), remainingMs(deadline), signal);
+        const cacheBudget = Math.min(remainingMs(deadline), cacheReadBudgetMs(timeoutMs));
+        const raw = await runBounded(cache.get(key), cacheBudget, signal);
         cached = isCachedLinkedPrompt(raw) ? raw : undefined;
       } catch (error) {
         /* An abort must still surface as the abort reason, not be swallowed into
@@ -255,9 +296,29 @@ export function createLinkedInstructionsResolver(
     }
     signal?.throwIfAborted();
 
+    /** Neither content-policy check ever rejects the resolution: a recognized
+     *  content-policy error maps to `blocked_content`, and anything else — an
+     *  unexpected throw from `assertModelBoundContent` — is logged and mapped
+     *  to the generic `'error'` reason instead of propagating. */
+    const checkPromptBlocked = (prompt: string): 'ok' | 'blocked' | 'error' => {
+      try {
+        return isPromptBlocked(prompt, filters) ? 'blocked' : 'ok';
+      } catch (error) {
+        logger.error('[linkedInstructions] Content-policy check failed', {
+          groupId: link.groupId,
+          errorName: errorName(error),
+        });
+        return 'error';
+      }
+    };
+
     if (cached) {
-      if (isPromptBlocked(cached.prompt, filters)) {
-        return { status: 'unavailable', reason: 'blocked_content' };
+      const blockCheck = checkPromptBlocked(cached.prompt);
+      if (blockCheck !== 'ok') {
+        return {
+          status: 'unavailable',
+          reason: blockCheck === 'blocked' ? 'blocked_content' : 'error',
+        };
       }
       return {
         status: 'resolved',
@@ -290,8 +351,12 @@ export function createLinkedInstructionsResolver(
       return { status: 'unavailable', reason: 'error' };
     }
 
-    if (isPromptBlocked(fetched.prompt, filters)) {
-      return { status: 'unavailable', reason: 'blocked_content' };
+    const fetchedBlockCheck = checkPromptBlocked(fetched.prompt);
+    if (fetchedBlockCheck !== 'ok') {
+      return {
+        status: 'unavailable',
+        reason: fetchedBlockCheck === 'blocked' ? 'blocked_content' : 'error',
+      };
     }
 
     if (cacheTtlMs > 0 && !signal?.aborted) {

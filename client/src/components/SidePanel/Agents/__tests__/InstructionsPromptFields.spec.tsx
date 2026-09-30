@@ -395,6 +395,49 @@ describe('InstructionsPromptFields', () => {
         screen.getByRole('combobox', { name: 'com_agents_instructions_prompt_version_label' }),
       ).toBeInTheDocument();
     });
+
+    it('still renders the Prompt combobox so the user can pick a replacement group', () => {
+      /** The backend allows removing or replacing a link to a deleted group, so the hint
+       *  must not replace the combobox — the user needs a control to act on it. */
+      mockGroupsQuery.data = [group({ _id: 'group_other', name: 'Other prompt' })];
+      render(
+        <Harness
+          defaultInstructionsPrompt={{
+            source: 'native',
+            groupId: 'group_missing',
+            selection: { type: 'production' },
+          }}
+        />,
+      );
+
+      expect(screen.getByText('com_agents_instructions_prompt_not_found')).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: 'com_ui_prompt' })).toBeInTheDocument();
+    });
+
+    it('lets the user pick a listed group to replace the missing one', () => {
+      mockGroupsQuery.data = [group({ _id: 'group_other', name: 'Other prompt' })];
+      let methods: UseFormReturn<AgentForm> | undefined;
+      render(
+        <Harness
+          defaultInstructionsPrompt={{
+            source: 'native',
+            groupId: 'group_missing',
+            selection: { type: 'production' },
+          }}
+          onMethods={(m) => (methods = m)}
+        />,
+      );
+
+      fireEvent.change(screen.getByRole('combobox', { name: 'com_ui_prompt' }), {
+        target: { value: 'group_other' },
+      });
+
+      expect(methods?.getValues('instructionsPrompt')).toEqual({
+        source: 'native',
+        groupId: 'group_other',
+        selection: { type: 'production' },
+      });
+    });
   });
 
   describe('accessible names across every render state', () => {

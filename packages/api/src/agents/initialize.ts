@@ -27,7 +27,6 @@ import type {
   Agent,
   TUser,
   TurnFileConsumers,
-  AgentInstructionsPrompt,
 } from 'librechat-data-provider';
 import type { GenericTool, LCToolRegistry, ToolMap, LCTool } from '@librechat/agents';
 import type { IMongoFile, FileOwnerScope } from '@librechat/data-schemas';
@@ -112,6 +111,7 @@ import { createConfiguredContentInspector, inspectContent } from '../protection/
 import { assertAgentAttachmentLimits, isModelBoundAttachmentFile } from './attachments';
 import { resolveAttachedWorkspaceCommandTimeoutMax } from '~/code/command';
 import { assertModelBoundContent } from '../middleware/modelBoundContent';
+import { isValidInstructionsPromptLink } from './instructions/linked';
 import { isImplicitStatefulCodeRouteAvailable } from '../code/config';
 import { registerMemoryTools, memoryToolUsageGuard } from './memory';
 import { applyIntentLabels, sanitizeIntentLabels } from './intent';
@@ -1104,46 +1104,21 @@ export async function initializeAgent(
   }
 
   /**
-   * Independent of every other step below (tool loading, resource priming,
-   * provider setup), so it starts as soon as the link and signal are known
-   * rather than waiting until the instructions block, well below, is reached.
-   * A valid link with no resolver never calls out, matching the "no resolver"
-   * fallback this same shape has always had.
+   * Computed up front, before the definition-content check below, because
+   * that check needs it: a valid link means the stored inline `instructions`
+   * is dead text — it is overwritten below with the resolved prompt, or with
+   * `''` when the link can't resolve — so it is excluded from the scan
+   * rather than inspected and then discarded.
    */
-  const instructionsPromptLink =
-    agent.instructionsPrompt != null &&
-    agent.instructionsPrompt.source === 'native' &&
-    'groupId' in agent.instructionsPrompt
-      ? (agent.instructionsPrompt as AgentInstructionsPrompt)
-      : undefined;
-  const linkedInstructionsPromise =
-    instructionsPromptLink && params.resolveLinkedInstructions
-      ? params.resolveLinkedInstructions({
-          link: instructionsPromptLink,
-          signal: params.signal,
-          filters: appConfig?.filters,
-          config: appConfig?.endpoints?.agents?.linkedInstructions,
-        })
-      : undefined;
-  /**
-   * Started well before its result is needed at the instructions block below.
-   * An abort (or any other rejection) that lands before that await must not
-   * surface as an unhandled rejection; this no-op handler only silences that
-   * warning — the promise itself, awaited later, still carries the real
-   * outcome, rejection included.
-   */
-  linkedInstructionsPromise?.catch(() => {});
+  const instructionsPromptLink = isValidInstructionsPromptLink(agent.instructionsPrompt)
+    ? agent.instructionsPrompt
+    : undefined;
 
   /**
    * Reject the stored agent definition before initialization performs usage
    * accounting, resource priming, tool/MCP loading, or provider setup. Inspect
    * definition fragments directly here: the raw agent may still contain
    * canonical file IDs that can only be validated after resource hydration.
-   *
-   * A valid link means the stored inline `instructions` is dead text — it is
-   * overwritten below with the resolved prompt, or with `''` when the link
-   * can't resolve — so it is excluded from this scan rather than inspected
-   * and then discarded.
    */
   let agentFragments: readonly TextContentFragment[] = [];
   let agentTraversalError: ContentTraversalLimitError | null = null;
@@ -1174,6 +1149,33 @@ export async function initializeAgent(
   ) {
     throw agentTraversalError;
   }
+
+  /**
+   * Independent of every other step below (tool loading, resource priming,
+   * provider setup), so it starts as soon as the definition-content check
+   * above has passed — rather than waiting until the instructions block,
+   * well below, is reached — but never before that check: a rejected agent
+   * definition must never trigger an external prompt-service call. A valid
+   * link with no resolver never calls out, matching the "no resolver"
+   * fallback this same shape has always had.
+   */
+  const linkedInstructionsPromise =
+    instructionsPromptLink && params.resolveLinkedInstructions
+      ? params.resolveLinkedInstructions({
+          link: instructionsPromptLink,
+          signal: params.signal,
+          filters: appConfig?.filters,
+          config: appConfig?.endpoints?.agents?.linkedInstructions,
+        })
+      : undefined;
+  /**
+   * Started well before its result is needed at the instructions block below.
+   * An abort (or any other rejection) that lands before that await must not
+   * surface as an unhandled rejection; this no-op handler only silences that
+   * warning — the promise itself, awaited later, still carries the real
+   * outcome, rejection included.
+   */
+  linkedInstructionsPromise?.catch(() => {});
 
   /**
    * Heal legacy MCP tool keys ONCE, before anything reads them: model-facing
@@ -2646,10 +2648,19 @@ export async function initializeAgent(
    * never reaches here; an initialization that throws after resolution never
    * reaches here either, so it records no use. Fire-and-forget: the turn
    * does not wait on the increment, and `recordUse` itself catches and logs
-   * its own errors.
+   * its own errors. The `typeof` guard is load-bearing, not defensive noise:
+   * `resolveLinkedInstructions` is typed as a plain callable in
+   * `InitializeAgentParams`, so a caller-supplied plain function (matching
+   * the type but not the resolver's `Object.assign(resolve, { recordUse })`
+   * shape) would otherwise throw here — after initialization has already
+   * fully succeeded — rather than silently recording no usage.
    */
-  if (instructionsPromptFacts && (params.recordLinkedPromptUsage ?? true)) {
-    params.resolveLinkedInstructions?.recordUse(instructionsPromptFacts);
+  if (
+    instructionsPromptFacts &&
+    (params.recordLinkedPromptUsage ?? true) &&
+    typeof params.resolveLinkedInstructions?.recordUse === 'function'
+  ) {
+    params.resolveLinkedInstructions.recordUse(instructionsPromptFacts);
   }
 
   return initializedAgent;

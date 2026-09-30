@@ -36,15 +36,21 @@ const thirdGroupLink: AgentInstructionsPrompt = {
 
 function buildAccess({
   visibleGroupIds = new Set<string>(),
+  deletedGroupIds = new Set<string>(),
   resolvePromptOk = true,
   getResourcePermissionsMap,
   resolvePrompt,
+  getPromptGroup,
   assertAgentInstructionsContent,
 }: {
   visibleGroupIds?: Set<string>;
+  /** Group ids `getPromptGroup` reports as no longer existing (deleted). Every other
+   *  id is reported as existing by default, matching `resolvePromptOk`'s default. */
+  deletedGroupIds?: Set<string>;
   resolvePromptOk?: boolean;
   getResourcePermissionsMap?: jest.Mock;
   resolvePrompt?: jest.Mock;
+  getPromptGroup?: jest.Mock;
   assertAgentInstructionsContent?: jest.Mock;
 } = {}) {
   const map = jest.fn(async ({ resourceIds }: { resourceIds: string[] }) => {
@@ -64,16 +70,28 @@ function buildAccess({
           error: { type: 'unavailable_selection' as const, reason: 'production' as const },
         },
   );
+  const getGroup = jest.fn(async ({ groupId: id }: { groupId: string }) =>
+    deletedGroupIds.has(id)
+      ? null
+      : {
+          ok: true as const,
+          value: { _id: id, name: 'Group', author: 'user-1', authorName: 'Author' },
+        },
+  );
   const assertContent = assertAgentInstructionsContent ?? jest.fn();
   const access = createInstructionsPromptAccess({
     getResourcePermissionsMap: getResourcePermissionsMap ?? map,
-    promptService: { resolvePrompt: resolvePrompt ?? resolve },
+    promptService: {
+      resolvePrompt: resolvePrompt ?? resolve,
+      getPromptGroup: getPromptGroup ?? getGroup,
+    },
     assertAgentInstructionsContent: assertContent,
   });
   return {
     access,
     map: getResourcePermissionsMap ?? map,
     resolve: resolvePrompt ?? resolve,
+    getGroup: getPromptGroup ?? getGroup,
     assertContent,
   };
 }
@@ -385,6 +403,86 @@ describe('createInstructionsPromptAccess', () => {
       });
     });
 
+    describe('a linked group that no longer exists imposes no restriction', () => {
+      it('allows removing a link to a deleted group (owner cannot VIEW it, but it no longer exists)', async () => {
+        const { access, getGroup } = buildAccess({ deletedGroupIds: new Set([otherGroupId]) });
+        const result = await access.validateLinkWrite({
+          user,
+          previous: otherGroupLink,
+          next: null,
+          requireResolvable: true,
+        });
+        expect(result).toEqual({ ok: true });
+        expect(getGroup).toHaveBeenCalledWith({ groupId: otherGroupId });
+      });
+
+      it('allows replacing a link to a deleted group with an accessible group', async () => {
+        const { access } = buildAccess({
+          visibleGroupIds: new Set([groupId]),
+          deletedGroupIds: new Set([otherGroupId]),
+        });
+        const result = await access.validateLinkWrite({
+          user,
+          previous: otherGroupLink,
+          next: productionLink,
+          requireResolvable: true,
+        });
+        expect(result).toEqual({ ok: true });
+      });
+
+      it('allows a revert that moves away from a deleted-group link', async () => {
+        const { access } = buildAccess({ deletedGroupIds: new Set([otherGroupId]) });
+        const result = await access.validateLinkWrite({
+          user,
+          previous: otherGroupLink,
+          next: null,
+          requireResolvable: false,
+        });
+        expect(result).toEqual({ ok: true });
+      });
+
+      it('allows a revert onto a version whose link points to a deleted group', async () => {
+        const { access } = buildAccess({ deletedGroupIds: new Set([otherGroupId]) });
+        const result = await access.validateLinkWrite({
+          user,
+          previous: null,
+          next: otherGroupLink,
+          requireResolvable: false,
+        });
+        expect(result).toEqual({ ok: true });
+      });
+
+      it('still rejects a NEW link to a nonexistent group (forbidden) — existence is never revealed', async () => {
+        const { access } = buildAccess({ deletedGroupIds: new Set([groupId]) });
+        const result = await access.validateLinkWrite({
+          user,
+          previous: null,
+          next: productionLink,
+          requireResolvable: true,
+        });
+        expect(result).toEqual({
+          ok: false,
+          status: 403,
+          code: InstructionsPromptErrorCode.FORBIDDEN,
+        });
+      });
+
+      it('still rejects reverting onto a link the editor cannot VIEW when its group still exists', async () => {
+        const { access } = buildAccess();
+        const result = await access.validateLinkWrite({
+          user,
+          previous: null,
+          next: otherGroupLink,
+          requireResolvable: false,
+        });
+        expect(result).toEqual({
+          ok: false,
+          status: 403,
+          code: InstructionsPromptErrorCode.FORBIDDEN,
+        });
+      });
+    });
+
     describe('content-policy check after a successful resolve', () => {
       it('rejects a resolvable link whose content the agent-instructions policy blocks', async () => {
         const { access, assertContent } = buildAccess({ visibleGroupIds: new Set([groupId]) });
@@ -491,6 +589,12 @@ describe('createInstructionsPromptAccess', () => {
       await expect(access.presentForEditor({ user, agent })).rejects.toThrow('acl outage');
     });
 
+    it('shows a link to a deleted group as-is instead of stubbing it — nothing left to protect', async () => {
+      const { access } = buildAccess({ deletedGroupIds: new Set([otherGroupId]) });
+      const agent = { id: 'a1', name: 'Agent', instructionsPrompt: otherGroupLink };
+      await expect(access.presentForEditor({ user, agent })).resolves.toBe(agent);
+    });
+
     describe('versions[] redaction', () => {
       it('leaves an agent with no links (top-level or versioned) untouched', async () => {
         const { access, map } = buildAccess();
@@ -572,6 +676,27 @@ describe('createInstructionsPromptAccess', () => {
         const [{ resourceIds }] = map.mock.calls[0];
         expect(new Set(resourceIds)).toEqual(new Set([groupId, otherGroupId, thirdGroupId]));
       });
+
+      it('shows a version snapshot linking a deleted group as-is, but still redacts one whose group exists', async () => {
+        const { access } = buildAccess({ deletedGroupIds: new Set([otherGroupId]) });
+        const agent = {
+          id: 'a1',
+          instructionsPrompt: null,
+          versions: [
+            { name: 'v1', instructionsPrompt: otherGroupLink },
+            { name: 'v2', instructionsPrompt: thirdGroupLink },
+          ],
+        };
+        const result = await access.presentForEditor({ user, agent });
+        expect(result).toEqual({
+          id: 'a1',
+          instructionsPrompt: null,
+          versions: [
+            { name: 'v1', instructionsPrompt: otherGroupLink },
+            { name: 'v2', instructionsPrompt: { source: 'native', restricted: true } },
+          ],
+        });
+      });
     });
   });
 
@@ -608,6 +733,13 @@ describe('createInstructionsPromptAccess', () => {
       ];
       const result = await access.presentVersionsForEditor({ user, versions });
       expect(result[0]).toBe(versions[0]);
+    });
+
+    it('shows a snapshot linking a deleted group as-is', async () => {
+      const { access } = buildAccess({ deletedGroupIds: new Set([otherGroupId]) });
+      const versions = [{ name: 'v1', instructionsPrompt: otherGroupLink }];
+      const result = await access.presentVersionsForEditor({ user, versions });
+      expect(result).toEqual(versions);
     });
 
     it('propagates a thrown permission-service error', async () => {

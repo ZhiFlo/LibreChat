@@ -1,7 +1,20 @@
 import type { FiltersConfig, AgentInstructionsPrompt } from 'librechat-data-provider';
 import type { LinkedInstructionsCache, LinkedInstructionsLogger } from './linked';
 import type { PromptService, ResolvedPrompt } from '~/prompts';
+import { ContentTraversalLimitError } from '~/protection/adapters/nested';
+import { assertModelBoundContent } from '~/middleware/modelBoundContent';
 import { createLinkedInstructionsResolver } from './linked';
+
+jest.mock('~/middleware/modelBoundContent', () => ({
+  ...jest.requireActual('~/middleware/modelBoundContent'),
+  assertModelBoundContent: jest.fn(),
+}));
+
+const mockAssertModelBoundContent = assertModelBoundContent as jest.MockedFunction<
+  typeof assertModelBoundContent
+>;
+const actualAssertModelBoundContent = jest.requireActual('~/middleware/modelBoundContent')
+  .assertModelBoundContent as typeof assertModelBoundContent;
 
 /** Map-based cache with real per-entry TTL, matching the Keyv contract the resolver relies on. */
 class FakeCache implements LinkedInstructionsCache {
@@ -99,6 +112,10 @@ function makePromptService(
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 describe('createLinkedInstructionsResolver', () => {
+  beforeEach(() => {
+    mockAssertModelBoundContent.mockImplementation(actualAssertModelBoundContent);
+  });
+
   it('resolves the production selection on a cache miss and caches the result', async () => {
     const cache = new FakeCache();
     const promptService = makePromptService();
@@ -223,6 +240,42 @@ describe('createLinkedInstructionsResolver', () => {
     await expect(cache.get(`native:${groupId}:production`)).resolves.toBeUndefined();
   });
 
+  it('maps any content-policy error the content check throws to blocked_content, not just ContentFilterError', async () => {
+    // A traversal-limit error is a content-policy error `isContentFilterError`
+    // recognizes, but not an `instanceof ContentFilterError` — this is exactly
+    // the gap `isContentFilterError` closes over the old `instanceof` check.
+    mockAssertModelBoundContent.mockImplementation(() => {
+      throw new ContentTraversalLimitError();
+    });
+    const cache = new FakeCache();
+    const promptService = makePromptService();
+    const logger = makeLogger();
+    const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+    const result = await resolver({ link: productionLink });
+
+    expect(result).toEqual({ status: 'unavailable', reason: 'blocked_content' });
+  });
+
+  it('maps an error the content-policy check does not recognize to reason "error" instead of rejecting', async () => {
+    mockAssertModelBoundContent.mockImplementation(() => {
+      throw new Error('unexpected content-policy failure');
+    });
+    const cache = new FakeCache();
+    const promptService = makePromptService();
+    const logger = makeLogger();
+    const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+    await expect(resolver({ link: productionLink })).resolves.toEqual({
+      status: 'unavailable',
+      reason: 'error',
+    });
+    expect(logger.error).toHaveBeenCalledWith(
+      '[linkedInstructions] Content-policy check failed',
+      expect.objectContaining({ groupId, errorName: 'Error' }),
+    );
+  });
+
   it('fetches fresh content after the cached entry expires', async () => {
     jest.useFakeTimers();
     try {
@@ -295,7 +348,38 @@ describe('createLinkedInstructionsResolver', () => {
     );
   });
 
-  it('bounds total latency to ~timeoutMs when the cache read itself hangs, sharing one deadline with resolution', async () => {
+  it('bounds the cache-read phase so a hung cache read still leaves resolvePrompt room to answer from the database', async () => {
+    jest.useFakeTimers();
+    try {
+      const cache = new FakeCache();
+      jest.spyOn(cache, 'get').mockReturnValue(new Promise(() => {})); // never settles
+      const promptService = makePromptService(); // resolvePrompt settles immediately
+      const logger = makeLogger();
+      const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+      const pending = resolver({ link: productionLink, config: { timeoutMs: 200 } });
+      // The cache-read phase is capped at min(250ms, timeoutMs / 4) = 50ms here, well
+      // under the 200ms deadline — advancing past just that cap (not the full
+      // deadline) is enough for the hung cache read to time out, fall through to
+      // resolvePrompt, and settle from the database with ~150ms of budget to spare.
+      await jest.advanceTimersByTimeAsync(50);
+
+      await expect(pending).resolves.toEqual({
+        status: 'resolved',
+        prompt: 'You are a helpful assistant.',
+        facts: { source: 'native', groupId, promptId },
+      });
+      expect(promptService.resolvePrompt).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        '[linkedInstructions] Cache read failed; resolving without cache',
+        expect.objectContaining({ groupId, errorName: 'LinkedInstructionsTimeoutError' }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('still bounds total latency to ~timeoutMs when both the cache read and resolvePrompt hang', async () => {
     jest.useFakeTimers();
     try {
       const cache = new FakeCache();
@@ -309,11 +393,10 @@ describe('createLinkedInstructionsResolver', () => {
       const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
 
       const pending = resolver({ link: productionLink, config: { timeoutMs: 50 } });
-      // The cache-phase timeout consumes the whole budget; the resolvePrompt phase
-      // then gets ~0ms remaining and schedules its own timer right after, so a
-      // small second advance (not another full timeoutMs) is enough to settle it.
+      // The capped cache-read phase (min(250ms, 50/4) = 12.5ms) times out first;
+      // the remaining ~37.5ms of the shared deadline is left for resolvePrompt,
+      // which also hangs and times out in turn.
       await jest.advanceTimersByTimeAsync(50);
-      await jest.advanceTimersByTimeAsync(5);
 
       await expect(pending).resolves.toEqual({ status: 'unavailable', reason: 'timeout' });
     } finally {

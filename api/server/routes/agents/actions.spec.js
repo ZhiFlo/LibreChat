@@ -31,6 +31,16 @@ jest.mock('~/models', () => ({
   getListAgentsByAccess: jest.fn(),
   getActions: jest.fn(),
   getAgent: jest.fn(),
+  // `instructionsPromptAccess` (below) reads this to tell an inaccessible-but-
+  // existing link (redact) apart from one whose group has been deleted (show
+  // as-is). The tests here exercise permission-only redaction, so the group
+  // always exists.
+  getPromptGroup: jest.fn().mockResolvedValue({
+    _id: '507f1f77bcf86cd799439011',
+    name: 'Fixture Group',
+    author: 'owner-id',
+    authorName: 'Owner',
+  }),
   updateAgent: jest.fn(),
   updateAction: jest.fn(),
   deleteAction: jest.fn(),

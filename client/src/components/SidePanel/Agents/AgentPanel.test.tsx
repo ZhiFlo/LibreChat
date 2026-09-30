@@ -829,6 +829,125 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
         await waitFor(() => expect(mockUpdateAgent).toHaveBeenCalledTimes(2));
         expect(mockUpdateAgent.mock.calls[1][0].data).not.toHaveProperty('instructionsPrompt');
       });
+
+      it('sends the link on create after "create new" follows a linked agent picking the same group', async () => {
+        /** Regression for the ref that remembers the last-loaded link: it used to update
+         *  only while `agentQuery.data` was truthy, so it stayed pinned to agent A's link
+         *  after "create new" cleared the selection (`agentQuery.data` goes back to
+         *  `undefined` and never becomes truthy again for "no agent"). Picking Prompt mode
+         *  and the same group on the new agent then read as "unchanged" against the stale
+         *  ref, and the create payload silently omitted the link. */
+        const { mockUseGetAgentByIdQuery } = setupMocks();
+
+        // Agent A is open, linked to group_1.
+        mockAgentPanelContext = { ...mockAgentPanelContext, agent_id: 'agent-A' };
+        mockAgentQuery(mockUseGetAgentByIdQuery, {
+          id: 'agent-A',
+          name: 'Agent A',
+          version: 2,
+          instructionsPrompt: link,
+        });
+        mockFormDefaults = {
+          id: 'agent-A',
+          instructionsSource: 'prompt',
+          instructionsPrompt: link,
+        };
+        (dataService.createAgent as jest.Mock).mockResolvedValue(
+          createMockAgent({ id: 'agent-new' }),
+        );
+
+        const Wrapper = createWrapper();
+        const { container, rerender } = render(<AgentPanel />, { wrapper: Wrapper });
+
+        // "Create new": no agent selected, and its query has nothing to return.
+        mockAgentPanelContext = { ...mockAgentPanelContext, agent_id: undefined };
+        mockUseGetAgentByIdQuery.mockReturnValue({
+          data: undefined,
+          isInitialLoading: false,
+        } as any);
+        (
+          useGetExpandedAgentByIdQuery as jest.MockedFunction<typeof useGetExpandedAgentByIdQuery>
+        ).mockReturnValue({ data: undefined, isInitialLoading: false } as any);
+        rerender(<AgentPanel />);
+
+        // The user fills out the new agent, picking Prompt mode and group_1 again.
+        act(() => {
+          capturedFormMethods!.setValue('id', '', { shouldDirty: true });
+          capturedFormMethods!.setValue('name', 'New Agent', { shouldDirty: true });
+          capturedFormMethods!.setValue('provider', 'openai', { shouldDirty: true });
+          capturedFormMethods!.setValue('model', 'gpt-4', { shouldDirty: true });
+          capturedFormMethods!.setValue('instructionsSource', 'prompt', { shouldDirty: true });
+          capturedFormMethods!.setValue('instructionsPrompt', link, { shouldDirty: true });
+        });
+
+        fireEvent.submit(container.querySelector('form')!);
+        await act(async () => {
+          mockFormSubmitHandler?.();
+        });
+
+        await waitFor(() => expect(dataService.createAgent).toHaveBeenCalledTimes(1));
+        expect((dataService.createAgent as jest.Mock).mock.calls[0][0]).toHaveProperty(
+          'instructionsPrompt',
+          link,
+        );
+      });
+
+      it('computes the changed flag against the newly selected agent when switching agents', async () => {
+        const { mockUseGetAgentByIdQuery, mockUpdateAgent } = setupMocks();
+
+        // Agent A is open, linked to group_1.
+        mockAgentPanelContext = { ...mockAgentPanelContext, agent_id: 'agent-A' };
+        mockAgentQuery(mockUseGetAgentByIdQuery, {
+          id: 'agent-A',
+          name: 'Agent A',
+          version: 2,
+          instructionsPrompt: link,
+        });
+        mockFormDefaults = {
+          id: 'agent-A',
+          instructionsSource: 'prompt',
+          instructionsPrompt: link,
+        };
+
+        const Wrapper = createWrapper();
+        const { container, rerender } = render(<AgentPanel />, { wrapper: Wrapper });
+
+        // Switch to agent B, which has no link at all.
+        mockAgentPanelContext = { ...mockAgentPanelContext, agent_id: 'agent-B' };
+        mockAgentQuery(mockUseGetAgentByIdQuery, {
+          id: 'agent-B',
+          name: 'Agent B',
+          version: 1,
+          instructionsPrompt: null,
+        });
+        rerender(<AgentPanel />);
+
+        // Mirrors what `AgentSelect`'s `resetAgentForm` does for the newly loaded agent.
+        act(() => {
+          capturedFormMethods!.setValue('id', 'agent-B', { shouldDirty: false });
+          capturedFormMethods!.setValue('instructionsSource', 'inline', { shouldDirty: false });
+          capturedFormMethods!.setValue('instructionsPrompt', null, { shouldDirty: false });
+          capturedFormMethods!.setValue('name', 'Renamed B', { shouldDirty: true });
+        });
+
+        mockUpdateAgent.mockResolvedValueOnce(
+          createMockAgent({
+            id: 'agent-B',
+            name: 'Renamed B',
+            version: 1,
+            instructionsPrompt: null,
+          }),
+        );
+
+        fireEvent.submit(container.querySelector('form')!);
+        await act(async () => {
+          mockFormSubmitHandler?.();
+        });
+
+        await waitFor(() => expect(mockUpdateAgent).toHaveBeenCalledTimes(1));
+        expect(mockUpdateAgent.mock.calls[0][0].agent_id).toBe('agent-B');
+        expect(mockUpdateAgent.mock.calls[0][0].data).not.toHaveProperty('instructionsPrompt');
+      });
     });
   });
 });

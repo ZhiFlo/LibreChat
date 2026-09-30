@@ -53,6 +53,15 @@ export interface InstructionsPromptAccess {
    * requested). `requireResolvable: false` skips the `resolvePrompt` and content-policy
    * checks — a revert's snapshot selection is allowed to no longer resolve, because a
    * stale revision just continues the turn without instructions rather than failing.
+   *
+   * A linked group that no longer exists imposes no restriction: when `previous`
+   * points to a deleted group (so its ACL is gone and the editor can no longer VIEW
+   * it), the write proceeds as if there were no previous link — the editor may remove
+   * the link, replace it with one they can VIEW, or revert. Group existence is never
+   * revealed through a *new* link, though: a `next` group the editor cannot VIEW is
+   * still `FORBIDDEN` whether or not it exists, unless `requireResolvable` is false
+   * (a revert), in which case reverting onto a link whose group no longer exists is
+   * allowed — the runtime simply continues without instructions.
    */
   validateLinkWrite(input: {
     user: InstructionsPromptAccessUser;
@@ -63,7 +72,10 @@ export interface InstructionsPromptAccess {
   }): Promise<InstructionsPromptWriteResult>;
   /** Replaces an inaccessible link — on the agent itself and inside every `versions[i]`
    *  snapshot — with a restricted stub before an EDIT-scoped response. Batches every
-   *  distinct linked group into a single permission lookup. */
+   *  distinct linked group into a single permission lookup. A link to a group that no
+   *  longer exists is shown as-is instead: there is no group identity left to protect,
+   *  and showing it (rather than a stub) is what lets the Builder offer the editor a
+   *  removal or replacement for it. */
   presentForEditor<T extends AgentWithVersionsCarrier>(input: {
     user: InstructionsPromptAccessUser;
     agent: T;
@@ -130,10 +142,19 @@ function collectLinkGroupIds(
  */
 export function createInstructionsPromptAccess(deps: {
   getResourcePermissionsMap: GetResourcePermissionsMap;
-  promptService: Pick<PromptService, 'resolvePrompt'>;
+  promptService: Pick<PromptService, 'resolvePrompt' | 'getPromptGroup'>;
   assertAgentInstructionsContent: AssertAgentInstructionsContent;
 }): InstructionsPromptAccess {
   const { getResourcePermissionsMap, promptService, assertAgentInstructionsContent } = deps;
+
+  /** Whether `groupId` still has a stored group record — a tenant-scoped, ACL-free
+   *  read, unlike `canViewGroup`. `deletePromptGroup` removes every ACL entry for a
+   *  group, so "not visible" alone can never distinguish a real restriction from a
+   *  group that simply no longer exists; this is what tells the two apart. */
+  async function groupExists(groupId: string): Promise<boolean> {
+    const result = await promptService.getPromptGroup({ groupId });
+    return result != null;
+  }
 
   async function canViewGroup({
     userId,
@@ -154,8 +175,15 @@ export function createInstructionsPromptAccess(deps: {
     return (bits & PermissionBits.VIEW) === PermissionBits.VIEW;
   }
 
-  /** One batched permission lookup for every distinct `groupId` among the given links. */
-  async function buildVisibilityMap(
+  /**
+   * One batched permission lookup for every distinct `groupId` among the given links,
+   * followed by an existence check for only the not-visible ones. Returns the subset
+   * that must be redacted before an EDIT-scoped response — a group the editor cannot
+   * VIEW *and* that still exists. A link to a deleted group is never redacted: there
+   * is no group identity left to protect, and showing it as-is is what lets the
+   * Builder offer the editor a removal or replacement for it.
+   */
+  async function buildRedactionSet(
     user: InstructionsPromptAccessUser,
     groupIds: readonly string[],
   ): Promise<ReadonlySet<string>> {
@@ -168,22 +196,29 @@ export function createInstructionsPromptAccess(deps: {
       resourceType: ResourceType.PROMPTGROUP,
       resourceIds: [...groupIds],
     });
-    const visible = new Set<string>();
-    for (const groupId of groupIds) {
+    const notVisible = groupIds.filter((groupId) => {
       const bits = permissionsMap.get(groupId) ?? 0;
-      if ((bits & PermissionBits.VIEW) === PermissionBits.VIEW) {
-        visible.add(groupId);
-      }
+      return (bits & PermissionBits.VIEW) !== PermissionBits.VIEW;
+    });
+    if (notVisible.length === 0) {
+      return new Set();
     }
-    return visible;
+    const existence = await Promise.all(notVisible.map((groupId) => groupExists(groupId)));
+    const redact = new Set<string>();
+    notVisible.forEach((groupId, index) => {
+      if (existence[index]) {
+        redact.add(groupId);
+      }
+    });
+    return redact;
   }
 
   function redactIfHidden<T extends AgentInstructionsPromptCarrier>(
     carrier: T,
-    visibleGroupIds: ReadonlySet<string>,
+    redactGroupIds: ReadonlySet<string>,
   ): T {
     const link = carrier.instructionsPrompt;
-    if (link == null || isRestrictedStub(link) || visibleGroupIds.has(link.groupId)) {
+    if (link == null || isRestrictedStub(link) || !redactGroupIds.has(link.groupId)) {
       return carrier;
     }
     return { ...carrier, instructionsPrompt: RESTRICTED_STUB };
@@ -217,12 +252,14 @@ export function createInstructionsPromptAccess(deps: {
         role: user.role,
         groupId: previous.groupId,
       });
-      if (!previousVisible) {
+      if (!previousVisible && (await groupExists(previous.groupId))) {
         return { ok: false, status: 403, code: InstructionsPromptErrorCode.RESTRICTED };
       }
+      // Either visible, or a deleted group: it imposes no restriction on `next`.
     }
     if (next == null) {
-      // Removing a link the editor could VIEW (or that never existed) is always allowed.
+      // Removing a link the editor could VIEW (or that never existed, or no longer
+      // exists) is always allowed.
       return { ok: true };
     }
     const nextVisible = await canViewGroup({
@@ -231,6 +268,13 @@ export function createInstructionsPromptAccess(deps: {
       groupId: next.groupId,
     });
     if (!nextVisible) {
+      // A revert may land on a link whose group has since been deleted — allowed,
+      // since the runtime just continues without instructions. A *new* link (any
+      // other write) stays FORBIDDEN regardless of existence, so group existence is
+      // never revealed through it.
+      if (!requireResolvable && !(await groupExists(next.groupId))) {
+        return { ok: true };
+      }
       return { ok: false, status: 403, code: InstructionsPromptErrorCode.FORBIDDEN };
     }
     if (!requireResolvable) {
@@ -272,25 +316,25 @@ export function createInstructionsPromptAccess(deps: {
     if (groupIds.length === 0) {
       return agent;
     }
-    const visible = await buildVisibilityMap(user, groupIds);
+    const redact = await buildRedactionSet(user, groupIds);
     const topLevelLink = agent.instructionsPrompt;
-    const topLevelVisible =
-      topLevelLink == null || isRestrictedStub(topLevelLink) || visible.has(topLevelLink.groupId);
-    const versionsVisible =
+    const topLevelRedacted =
+      topLevelLink != null && !isRestrictedStub(topLevelLink) && redact.has(topLevelLink.groupId);
+    const versionsUnchanged =
       versions == null ||
       versions.every((version) => {
         const link = version.instructionsPrompt;
-        return link == null || isRestrictedStub(link) || visible.has(link.groupId);
+        return link == null || isRestrictedStub(link) || !redact.has(link.groupId);
       });
-    if (topLevelVisible && versionsVisible) {
+    if (!topLevelRedacted && versionsUnchanged) {
       return agent;
     }
     return {
       ...agent,
-      ...(topLevelVisible ? {} : { instructionsPrompt: RESTRICTED_STUB }),
+      ...(topLevelRedacted ? { instructionsPrompt: RESTRICTED_STUB } : {}),
       ...(versions == null
         ? {}
-        : { versions: versions.map((version) => redactIfHidden(version, visible)) }),
+        : { versions: versions.map((version) => redactIfHidden(version, redact)) }),
     };
   }
 
@@ -305,8 +349,8 @@ export function createInstructionsPromptAccess(deps: {
     if (groupIds.length === 0) {
       return versions as T[];
     }
-    const visible = await buildVisibilityMap(user, groupIds);
-    return versions.map((version) => redactIfHidden(version, visible));
+    const redact = await buildRedactionSet(user, groupIds);
+    return versions.map((version) => redactIfHidden(version, redact));
   }
 
   return { canViewGroup, validateLinkWrite, presentForEditor, presentVersionsForEditor };

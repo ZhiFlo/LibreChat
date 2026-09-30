@@ -5577,6 +5577,77 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         expect(persisted.instructionsPrompt).toBeUndefined();
       });
 
+      describe('a linked group that has been deleted', () => {
+        test('allows the owner to remove a link to a deleted group (update null) even without VIEW', async () => {
+          const { groupId } = await createPromptGroupFixture('Doomed Group');
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Agent With Deleted Link',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructionsPrompt: {
+              source: 'native',
+              groupId,
+              selection: { type: 'production' },
+            },
+          });
+          // The group is deleted (its ACL entries go with it): the owner no
+          // longer has VIEW on it. `mockGroupVisibility` is never called with
+          // `groupId`, so it stays out of visibility either way.
+          await db.deletePromptGroup({ _id: groupId });
+
+          mockReq.params = { id: agent.id };
+          mockReq.body = { instructionsPrompt: null };
+
+          await updateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).not.toHaveBeenCalledWith(403);
+          expect(mockRes.status).not.toHaveBeenCalledWith(400);
+          const response = mockRes.json.mock.calls[0][0];
+          expect(response.instructionsPrompt).toBeUndefined();
+          const persisted = await Agent.findOne({ id: agent.id }).lean();
+          expect(persisted.instructionsPrompt).toBeUndefined();
+        });
+
+        test('allows the owner to replace a link to a deleted group with an accessible one', async () => {
+          const { groupId: deletedGroupId } = await createPromptGroupFixture('Doomed Group 2');
+          const { groupId: nextGroupId } = await createPromptGroupFixture('Replacement Group');
+          mockGroupVisibility(new Set([nextGroupId]));
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Agent With Deleted Link',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructionsPrompt: {
+              source: 'native',
+              groupId: deletedGroupId,
+              selection: { type: 'production' },
+            },
+          });
+          await db.deletePromptGroup({ _id: deletedGroupId });
+
+          mockReq.params = { id: agent.id };
+          mockReq.body = {
+            instructionsPrompt: {
+              source: 'native',
+              groupId: nextGroupId,
+              selection: { type: 'production' },
+            },
+          };
+
+          await updateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).not.toHaveBeenCalledWith(403);
+          expect(mockRes.status).not.toHaveBeenCalledWith(400);
+          const persisted = await Agent.findOne({ id: agent.id }).lean();
+          expect(persisted.instructionsPrompt.groupId).toBe(nextGroupId);
+        });
+      });
+
       test('redacts an inaccessible link inside versions[] in the PATCH response, without touching the persisted snapshot', async () => {
         const { groupId: restrictedGroupId } = await createPromptGroupFixture(
           'Restricted History Group',
@@ -6004,6 +6075,94 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         expect(response.instructionsPrompt).toEqual({ source: 'native', restricted: true });
         const persisted = await Agent.findOne({ id: agentId }).lean();
         expect(persisted.instructionsPrompt).toEqual(instructionsPrompt);
+      });
+
+      describe('a linked group that has been deleted', () => {
+        test('allows a revert that moves away from a deleted-group link, even without VIEW', async () => {
+          const { groupId } = await createPromptGroupFixture('Doomed Current Link');
+          const agentId = `agent_${nanoid()}`;
+          await Agent.create({
+            id: agentId,
+            author: mockReq.user.id,
+            name: 'Current Deleted-Link Agent',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructionsPrompt: {
+              source: 'native',
+              groupId,
+              selection: { type: 'production' },
+            },
+            versions: [
+              {
+                name: 'Pre-Link Agent',
+                provider: 'openai',
+                model: 'gpt-4',
+                tools: [],
+              },
+            ],
+          });
+          await db.deletePromptGroup({ _id: groupId });
+
+          mockReq.params = { id: agentId };
+          mockReq.body = { version_index: 0 };
+
+          await revertAgentVersionHandler(mockReq, mockRes);
+
+          expect(mockRes.status).not.toHaveBeenCalledWith(400);
+          expect(mockRes.status).not.toHaveBeenCalledWith(403);
+          const response = mockRes.json.mock.calls[0][0];
+          expect(response.name).toBe('Pre-Link Agent');
+          expect(response.instructionsPrompt).toBeUndefined();
+          const persisted = await Agent.findOne({ id: agentId }).lean();
+          expect(persisted.instructionsPrompt).toBeUndefined();
+        });
+
+        test('allows a revert onto a version linking a deleted group', async () => {
+          const { groupId } = await createPromptGroupFixture('Doomed Snapshot Link');
+          const agentId = `agent_${nanoid()}`;
+          await Agent.create({
+            id: agentId,
+            author: mockReq.user.id,
+            name: 'Current Unlinked Agent',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            versions: [
+              {
+                name: 'Deleted-Link Snapshot',
+                provider: 'openai',
+                model: 'gpt-4',
+                tools: [],
+                instructionsPrompt: {
+                  source: 'native',
+                  groupId,
+                  selection: { type: 'production' },
+                },
+              },
+            ],
+          });
+          await db.deletePromptGroup({ _id: groupId });
+
+          mockReq.params = { id: agentId };
+          mockReq.body = { version_index: 0 };
+
+          await revertAgentVersionHandler(mockReq, mockRes);
+
+          expect(mockRes.status).not.toHaveBeenCalledWith(400);
+          expect(mockRes.status).not.toHaveBeenCalledWith(403);
+          const response = mockRes.json.mock.calls[0][0];
+          expect(response.name).toBe('Deleted-Link Snapshot');
+          // The group no longer exists, so there is nothing left to protect —
+          // shown as-is rather than stubbed, per `presentForEditor`.
+          expect(response.instructionsPrompt).toEqual({
+            source: 'native',
+            groupId,
+            selection: { type: 'production' },
+          });
+          const persisted = await Agent.findOne({ id: agentId }).lean();
+          expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+        });
       });
     });
 

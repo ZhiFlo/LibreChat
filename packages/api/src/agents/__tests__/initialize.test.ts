@@ -4909,6 +4909,26 @@ describe('initializeAgent — linked instructions', () => {
     expect(resolveLinkedInstructions.recordUse).not.toHaveBeenCalled();
   });
 
+  it('does not throw when the resolver is a plain function with no recordUse (a successful init still returns normally)', async () => {
+    // `resolveLinkedInstructions` is typed as a plain callable in
+    // `InitializeAgentParams`; a caller-supplied function that matches the
+    // type but not the real resolver's `Object.assign(resolve, { recordUse })`
+    // shape must not throw after initialization has already succeeded.
+    const resolveLinkedInstructions: ResolveLinkedInstructions = jest.fn().mockResolvedValue({
+      status: 'resolved',
+      prompt: 'Fixed instructions.',
+      facts: { source: 'native', groupId: 'group-1', promptId: 'prompt-1' },
+    }) as unknown as ResolveLinkedInstructions;
+
+    const result = await run({
+      agentOverrides: { instructionsPrompt: link },
+      params: { resolveLinkedInstructions },
+    });
+    await flush();
+
+    expect(result.instructions).toBe('Fixed instructions.');
+  });
+
   it('does not produce an unhandled rejection when the resolution rejects before it is awaited', async () => {
     const unhandled: unknown[] = [];
     const onUnhandledRejection = (reason: unknown): void => {
@@ -5023,6 +5043,55 @@ describe('initializeAgent — linked instructions and the agent-definition conte
     );
 
     expect(result.instructions).toBe('Safe resolved prompt.');
+  });
+
+  it('never calls the resolver when the definition-content check rejects a field other than instructions', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({});
+    Object.assign(agent, {
+      instructionsPrompt: link,
+      // The stored inline `instructions` are excluded from the scan by the
+      // link (see the test above), but `description` is not — the check
+      // must still run, and reject, before the resolver is ever started.
+      description: 'Contains SECRET-VALUE marker',
+    });
+    Object.assign(req, {
+      config: {
+        filters: {
+          agentInstructions: {
+            pii: {
+              starterPatterns: [],
+              customPatterns: [{ id: 'secret', label: 'secret value', regex: 'SECRET-[A-Z]+' }],
+              fields: ['description'],
+            },
+          },
+        },
+      },
+    });
+    const resolveLinkedInstructions = jest.fn().mockResolvedValue({
+      status: 'resolved',
+      prompt: 'Safe resolved prompt.',
+      facts: { source: 'native', groupId: 'group-1', promptId: 'prompt-1' },
+    });
+    Object.assign(resolveLinkedInstructions, { recordUse: jest.fn() });
+
+    await expect(
+      initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([Providers.OPENAI]),
+          isInitialAgent: true,
+          resolveLinkedInstructions:
+            resolveLinkedInstructions as unknown as ResolveLinkedInstructions,
+        },
+        db,
+      ),
+    ).rejects.toThrow();
+
+    expect(resolveLinkedInstructions).not.toHaveBeenCalled();
   });
 });
 

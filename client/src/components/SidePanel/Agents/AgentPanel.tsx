@@ -75,8 +75,11 @@ function getUpdateToastMessage(
  * @param {string | null} [agent_id] - Agent identifier, if the agent already exists.
  * @param {AgentParameterConfig} [parameterConfig] - Model parameter schema context.
  * @param {{ instructionsPromptChanged: boolean }} flags - Whether the linked-prompt
- *   selection changed, so the field is sent only on an actual edit. Required, with no
- *   default, so a caller can never silently overwrite a stored link.
+ *   selection changed, so an update sends the field only on an actual edit. Required,
+ *   with no default, so a caller can never silently overwrite a stored link. A create
+ *   (no `agent_id`) always sends the resolved link regardless of this flag: there is no
+ *   stored value to diff against, and the new agent must not end up unlinked just
+ *   because the selection happens to match whatever agent was last open in the panel.
  * @returns {{ payload: Partial<AgentForm>; provider: string; model: string }} Payload metadata.
  */
 export function composeAgentUpdatePayload(
@@ -123,6 +126,10 @@ export function composeAgentUpdatePayload(
     instructionsSource === 'prompt' && !isRestrictedInstructionsPrompt(instructionsPrompt)
       ? (instructionsPrompt ?? null)
       : null;
+  /** A create has no stored link to diff against, so it always carries the resolved
+   *  value; an update sends it only when `flags.instructionsPromptChanged` says the
+   *  selection actually moved. */
+  const sendInstructionsPrompt = !agent_id || flags.instructionsPromptChanged;
 
   /* stateful_code_sessions requires Code Interpreter; force it off on save when
    * execute_code is disabled so a stale opt-in can't silently reactivate later. */
@@ -170,9 +177,7 @@ export function composeAgentUpdatePayload(
       artifacts,
       description,
       instructions,
-      ...(flags.instructionsPromptChanged
-        ? { instructionsPrompt: resolvedInstructionsPrompt }
-        : {}),
+      ...(sendInstructionsPrompt ? { instructionsPrompt: resolvedInstructionsPrompt } : {}),
       model,
       provider,
       model_parameters,
@@ -498,6 +503,15 @@ export default function AgentPanel() {
    *  cannot answer "did this save change the link" without risking a stale resend that
    *  overwrites a concurrent edit. */
   const lastLoadedInstructionsPromptRef = useRef<AgentForm['instructionsPrompt']>(null);
+  /** Clears the remembered link the moment the selected agent changes, including a
+   *  switch to "create new" (`current_agent_id` becomes `undefined`). Without this, a
+   *  stale ref from the previously open agent survives the switch, `agentQuery.data`
+   *  never turns truthy again for the id that's gone, and the effect below never gets a
+   *  chance to correct it, so a new agent linked to the same group as the old one reads
+   *  as "unchanged" and the link is dropped from the create payload. */
+  useEffect(() => {
+    lastLoadedInstructionsPromptRef.current = null;
+  }, [current_agent_id]);
   useEffect(() => {
     if (agentQuery.data) {
       lastLoadedInstructionsPromptRef.current = agentQuery.data.instructionsPrompt ?? null;

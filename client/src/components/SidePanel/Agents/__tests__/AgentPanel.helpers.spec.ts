@@ -422,6 +422,51 @@ describe('composeAgentUpdatePayload instructionsPrompt', () => {
 
     expect(payload.instructionsPrompt).toBeNull();
   });
+
+  it('always sends the link on create, even when the changed flag is false', () => {
+    /** A create has no `agent_id` and no stored value to diff against. Gating on the
+     *  caller's changed flag here is how a new agent linked to the same group as
+     *  whatever agent was last open in the panel ends up created with no link at all. */
+    const form = createForm();
+    form.instructionsSource = 'prompt';
+    form.instructionsPrompt = {
+      source: 'native',
+      groupId: 'group_1',
+      selection: { type: 'production' },
+    };
+
+    const { payload } = composeAgentUpdatePayload(form, undefined, undefined, {
+      instructionsPromptChanged: false,
+    });
+
+    expect(payload.instructionsPrompt).toEqual({
+      source: 'native',
+      groupId: 'group_1',
+      selection: { type: 'production' },
+    });
+  });
+
+  it('sends null on create for the default inline mode, even when the changed flag is false', () => {
+    const form = createForm();
+
+    const { payload } = composeAgentUpdatePayload(form, undefined, undefined, {
+      instructionsPromptChanged: false,
+    });
+
+    expect(payload).toHaveProperty('instructionsPrompt', null);
+  });
+
+  it('never sends the restricted stub on create either', () => {
+    const form = createForm();
+    form.instructionsSource = 'prompt';
+    form.instructionsPrompt = { source: 'native', restricted: true };
+
+    const { payload } = composeAgentUpdatePayload(form, undefined, undefined, {
+      instructionsPromptChanged: false,
+    });
+
+    expect(payload.instructionsPrompt).toBeNull();
+  });
 });
 
 describe('persistAvatarChanges', () => {
