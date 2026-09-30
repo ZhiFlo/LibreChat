@@ -48,9 +48,11 @@ import {
   AgentCapabilities,
   configSchema,
 } from 'librechat-data-provider';
+import { logger } from '@librechat/data-schemas';
 import type { IMongoFile } from '@librechat/data-schemas';
-import type { Agent, TFile } from 'librechat-data-provider';
+import type { Agent, TFile, AgentInstructionsPrompt } from 'librechat-data-provider';
 import type { ServerRequest, InitializeResultBase, EndpointTokenConfig } from '~/types';
+import type { ResolveLinkedInstructions } from '../instructions/linked';
 import type { InitializeAgentDbMethods } from '../initialize';
 import type { CodeExecutionContext } from '../execution';
 import { DEFAULT_MAX_CONTEXT_TOKENS } from '../initialize';
@@ -4728,6 +4730,131 @@ describe('initializeAgent — provider-native web search role gate', () => {
     const result = await run({});
 
     expect(result.tools).toContainEqual(OPENAI_SEARCH);
+  });
+});
+
+describe('initializeAgent — linked instructions', () => {
+  const link: AgentInstructionsPrompt = {
+    source: 'native',
+    groupId: 'group-1',
+    selection: { type: 'production' },
+  };
+
+  const run = async ({
+    agentOverrides,
+    reqOverrides,
+    params = {},
+  }: {
+    agentOverrides?: Partial<Agent>;
+    reqOverrides?: Partial<ServerRequest>;
+    params?: Partial<Parameters<typeof initializeAgent>[0]>;
+  }) => {
+    const { agent, req, res, loadTools, db } = createMocks({});
+    Object.assign(agent, agentOverrides);
+    Object.assign(req, reqOverrides);
+    return initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+        ...params,
+      },
+      db,
+    );
+  };
+
+  beforeEach(() => {
+    (logger.warn as jest.Mock).mockClear?.();
+  });
+
+  it('resolves a linked agent and still applies special-vars substitution', async () => {
+    const resolveLinkedInstructions: jest.MockedFunction<ResolveLinkedInstructions> = jest
+      .fn()
+      .mockResolvedValue({
+        status: 'resolved',
+        prompt: 'Hello {{current_user}}, be concise.',
+        facts: { source: 'native', groupId: 'group-1', promptId: 'prompt-1' },
+      });
+
+    const result = await run({
+      agentOverrides: { instructionsPrompt: link },
+      reqOverrides: { user: { id: 'user-1', name: 'Ada' } as never },
+      params: { resolveLinkedInstructions },
+    });
+
+    expect(resolveLinkedInstructions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        link,
+        recordUsage: true,
+      }),
+    );
+    expect(result.instructions).toBe('Hello Ada, be concise.');
+    expect(result.instructionsPromptFacts).toEqual({
+      source: 'native',
+      groupId: 'group-1',
+      promptId: 'prompt-1',
+    });
+  });
+
+  it('falls back to empty instructions with a warning when the link is unavailable', async () => {
+    const resolveLinkedInstructions: jest.MockedFunction<ResolveLinkedInstructions> = jest
+      .fn()
+      .mockResolvedValue({ status: 'unavailable', reason: 'timeout' });
+
+    const result = await run({
+      agentOverrides: { instructionsPrompt: link, instructions: 'stale inline text' },
+      params: { resolveLinkedInstructions },
+    });
+
+    expect(result.instructions).toBe('');
+    expect(result.instructionsPromptFacts).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('group-1'));
+  });
+
+  it('falls back to empty instructions with a warning when no resolver is provided', async () => {
+    const result = await run({
+      agentOverrides: { instructionsPrompt: link, instructions: 'stale inline text' },
+    });
+
+    expect(result.instructions).toBe('');
+    expect(result.instructionsPromptFacts).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('group-1'));
+  });
+
+  it('leaves an unlinked agent unchanged and never calls the resolver', async () => {
+    const resolveLinkedInstructions: jest.MockedFunction<ResolveLinkedInstructions> = jest.fn();
+
+    const result = await run({
+      agentOverrides: { instructions: 'Be helpful.' },
+      params: { resolveLinkedInstructions },
+    });
+
+    expect(resolveLinkedInstructions).not.toHaveBeenCalled();
+    expect(result.instructions).toBe('Be helpful.');
+    expect(result.instructionsPromptFacts).toBeUndefined();
+  });
+
+  it('forwards recordLinkedPromptUsage: false to the resolver', async () => {
+    const resolveLinkedInstructions: jest.MockedFunction<ResolveLinkedInstructions> = jest
+      .fn()
+      .mockResolvedValue({
+        status: 'resolved',
+        prompt: 'Fixed instructions.',
+        facts: { source: 'native', groupId: 'group-1', promptId: 'prompt-1' },
+      });
+
+    await run({
+      agentOverrides: { instructionsPrompt: link },
+      params: { resolveLinkedInstructions, recordLinkedPromptUsage: false },
+    });
+
+    expect(resolveLinkedInstructions).toHaveBeenCalledWith(
+      expect.objectContaining({ recordUsage: false }),
+    );
   });
 });
 

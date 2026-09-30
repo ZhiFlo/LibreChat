@@ -27,6 +27,7 @@ import type {
   Agent,
   TUser,
   TurnFileConsumers,
+  AgentInstructionsPrompt,
 } from 'librechat-data-provider';
 import type { GenericTool, LCToolRegistry, ToolMap, LCTool } from '@librechat/agents';
 import type { IMongoFile, FileOwnerScope } from '@librechat/data-schemas';
@@ -54,6 +55,7 @@ import type {
   EndpointTokenConfig,
   InitializeResultBase,
 } from '~/types';
+import type { ResolveLinkedInstructions, LinkedInstructionsFacts } from './instructions/linked';
 import type { LCAvailableTools, RequestScopedMCPConnectionStore } from '../mcp/types';
 import type { ContentTraversalLimitError } from '../protection/adapters/nested';
 import type { SkillContentInput } from '../protection/adapters/submissions';
@@ -773,6 +775,12 @@ export type InitializedAgent = Agent & {
   provisionWarnings?: string[];
   /** State for deferred file provisioning — actual uploads happen at tool invocation time */
   provisionState?: ProvisionState;
+  /**
+   * Facts about a resolved `instructionsPrompt` link (source, groupId,
+   * resolved promptId), surfaced for AI-2158. Never persisted — omitted for
+   * an agent with no link, an unresolved link, or a missing resolver.
+   */
+  instructionsPromptFacts?: LinkedInstructionsFacts;
 };
 
 export const DEFAULT_MAX_CONTEXT_TOKENS = 32000;
@@ -894,6 +902,22 @@ export interface InitializeAgentParams {
    * from `db.getRoleByName`.
    */
   resolveWebSearchGrant?: () => Promise<boolean>;
+  /**
+   * Resolves an agent's `instructionsPrompt` link (a linked native prompt
+   * group) into instruction text. Called only when `agent.instructionsPrompt`
+   * carries a resolvable `native` link. Absent, a linked agent falls back to
+   * empty instructions with a warning — there is no default DB-backed
+   * resolution path, unlike `resolveWebSearchGrant`, so every caller that
+   * wants linked instructions honored must supply one.
+   */
+  resolveLinkedInstructions?: ResolveLinkedInstructions;
+  /**
+   * Whether resolving `agent.instructionsPrompt` should record a usage
+   * generation on the linked prompt group. Defaults to `true`. Callers on the
+   * resume path set this to `false` because the turn that already counted the
+   * generation is being replayed, not repeated.
+   */
+  recordLinkedPromptUsage?: boolean;
   /**
    * Whether the `run_in_background` capability is enabled for this run. When
    * true, tools the agent opted in via `tool_options[name].run_in_background`
@@ -2258,6 +2282,46 @@ export async function initializeAgent(
     (agent.model_parameters as Record<string, unknown>).configuration = options.configOptions;
   }
 
+  /**
+   * Resolves an `instructionsPrompt` link before special-vars substitution, so
+   * a linked prompt's `{{current_date}}`-style placeholders are replaced the
+   * same way inline instructions are. A link without a resolver, or one that
+   * resolves to `unavailable`, continues the turn with empty instructions
+   * rather than failing initialization — the inline-text fallback is AI-2150.
+   */
+  let instructionsPromptFacts: LinkedInstructionsFacts | undefined;
+  const instructionsPromptLink =
+    agent.instructionsPrompt != null &&
+    agent.instructionsPrompt.source === 'native' &&
+    'groupId' in agent.instructionsPrompt
+      ? (agent.instructionsPrompt as AgentInstructionsPrompt)
+      : undefined;
+  if (instructionsPromptLink) {
+    if (params.resolveLinkedInstructions) {
+      const linkedResult = await params.resolveLinkedInstructions({
+        link: instructionsPromptLink,
+        signal: params.signal,
+        filters: appConfig?.filters,
+        config: appConfig?.endpoints?.agents?.linkedInstructions,
+        recordUsage: params.recordLinkedPromptUsage ?? true,
+      });
+      if (linkedResult.status === 'resolved') {
+        agent.instructions = linkedResult.prompt;
+        instructionsPromptFacts = linkedResult.facts;
+      } else {
+        agent.instructions = '';
+        logger.warn(
+          `[initializeAgent] Linked instructions unavailable for agent ${agent.id} (group ${instructionsPromptLink.groupId}): ${linkedResult.reason}`,
+        );
+      }
+    } else {
+      agent.instructions = '';
+      logger.warn(
+        `[initializeAgent] Agent ${agent.id} links instructions to group ${instructionsPromptLink.groupId} but no resolver was provided; continuing with empty instructions`,
+      );
+    }
+  }
+
   if (agent.instructions && agent.instructions !== '') {
     const resolvedInstructions = replaceSpecialVars({
       text: agent.instructions,
@@ -2545,6 +2609,7 @@ export async function initializeAgent(
         : Math.max(1024, Math.round(baseContextTokens * (1 - DEFAULT_RESERVE_RATIO))),
     primedCodeFiles,
     endpointTokenConfig: options.endpointTokenConfig,
+    instructionsPromptFacts,
   };
 
   return initializedAgent;
