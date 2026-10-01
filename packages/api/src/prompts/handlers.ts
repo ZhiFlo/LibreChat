@@ -1,5 +1,9 @@
-import { PermissionBits, ResourceType } from 'librechat-data-provider';
 import { logger, isValidObjectIdString } from '@librechat/data-schemas';
+import {
+  PermissionBits,
+  ResourceType,
+  DEFAULT_CACHE_CLEAR_TIMEOUT_MS,
+} from 'librechat-data-provider';
 import type { Response } from 'express';
 import type { PromptGroupRecord, PromptServiceError, StoredId } from './types';
 import type { PromptViaGroupResource } from './access';
@@ -93,30 +97,28 @@ function sendRejection(res: Response, error: PromptServiceError): Response {
 }
 
 /**
- * Bounds the cache clear so a stalled delete (for example, Redis down with the
- * offline queue enabled) cannot hold the HTTP response after the write has
- * already committed. Not configurable.
- */
-const CACHE_CLEAR_TIMEOUT_MS = 1000;
-
-/**
  * Clears the linked-instructions cache so a promote or delete reaches linked agents
  * on the next request instead of after the cache's TTL. A no-op when no cache is
  * wired. The write this follows has already succeeded; the clear waits at most
- * `CACHE_CLEAR_TIMEOUT_MS` and lets the delete finish in the background past that
- * limit. A timeout and a rejection both log and continue rather than surface, since
- * either one only loses cache warmth.
+ * `endpoints.agents.linkedInstructions.native.cacheClearTimeoutMs` (default
+ * `DEFAULT_CACHE_CLEAR_TIMEOUT_MS`) and lets the delete finish in the background past
+ * that limit. A timeout and a rejection both log and continue rather than surface,
+ * since either one only loses cache warmth.
  */
 async function clearLinkedPromptCache(
   deps: PromptHandlersDeps,
+  req: PromptRequest,
   groupId: string,
   promptIds: readonly string[],
 ): Promise<void> {
   if (!deps.invalidateLinkedPrompt) {
     return;
   }
+  const cacheClearTimeoutMs =
+    req.config?.endpoints?.agents?.linkedInstructions?.native?.cacheClearTimeoutMs ??
+    DEFAULT_CACHE_CLEAR_TIMEOUT_MS;
   try {
-    await runBounded(deps.invalidateLinkedPrompt(groupId, promptIds), CACHE_CLEAR_TIMEOUT_MS);
+    await runBounded(deps.invalidateLinkedPrompt(groupId, promptIds), cacheClearTimeoutMs);
   } catch (error) {
     logger.error('[prompts] Failed to clear the linked-instructions cache', {
       groupId,
@@ -321,7 +323,7 @@ export function createPromptHandlers(deps: PromptHandlersDeps): PromptHandlers {
           return sendRejection(res, result.error);
         }
         if (result.groupId) {
-          await clearLinkedPromptCache(deps, result.groupId, []);
+          await clearLinkedPromptCache(deps, req, result.groupId, []);
         }
         return res.status(200).send(result.value);
       } catch (error) {
@@ -399,7 +401,7 @@ export function createPromptHandlers(deps: PromptHandlersDeps): PromptHandlers {
         if (!result.ok) {
           return sendRejection(res, result.error);
         }
-        await clearLinkedPromptCache(deps, groupId, [promptId]);
+        await clearLinkedPromptCache(deps, req, groupId, [promptId]);
         return res.status(200).send(result.value);
       } catch (error) {
         logger.error(error);
@@ -416,7 +418,7 @@ export function createPromptHandlers(deps: PromptHandlersDeps): PromptHandlers {
           ? (await service.getPrompts({ groupId })).map((revision) => revision._id)
           : [];
         const value = await service.deletePromptGroup(groupId);
-        await clearLinkedPromptCache(deps, groupId, promptIds);
+        await clearLinkedPromptCache(deps, req, groupId, promptIds);
         return res.send(value);
       } catch (error) {
         logger.error('Error deleting prompt group', error);

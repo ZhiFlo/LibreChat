@@ -125,13 +125,13 @@ describe('linked instructions configuration', () => {
     expect(agentsEndpointSchema.parse({}).linkedInstructions).toBeUndefined();
     expect(agentsEndpointSchema.parse({ linkedInstructions: {} }).linkedInstructions).toEqual({
       timeoutMs: 2000,
-      native: { cacheTtlMs: 300_000 },
+      native: { cacheTtlMs: 300_000, cacheClearTimeoutMs: 1000 },
     });
     expect(
       agentsEndpointSchema.parse({
         linkedInstructions: { timeoutMs: 5000, native: { cacheTtlMs: 0 } },
       }).linkedInstructions,
-    ).toEqual({ timeoutMs: 5000, native: { cacheTtlMs: 0 } });
+    ).toEqual({ timeoutMs: 5000, native: { cacheTtlMs: 0, cacheClearTimeoutMs: 1000 } });
     for (const timeoutMs of [0, 99, 30_001, 1.5]) {
       expect(agentsEndpointSchema.safeParse({ linkedInstructions: { timeoutMs } }).success).toBe(
         false,
@@ -140,6 +140,12 @@ describe('linked instructions configuration', () => {
     for (const cacheTtlMs of [-1, 3_600_001, 1.5]) {
       expect(
         agentsEndpointSchema.safeParse({ linkedInstructions: { native: { cacheTtlMs } } }).success,
+      ).toBe(false);
+    }
+    for (const cacheClearTimeoutMs of [0, 30_001, 1.5]) {
+      expect(
+        agentsEndpointSchema.safeParse({ linkedInstructions: { native: { cacheClearTimeoutMs } } })
+          .success,
       ).toBe(false);
     }
   });

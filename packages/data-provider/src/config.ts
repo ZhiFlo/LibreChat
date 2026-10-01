@@ -1334,6 +1334,7 @@ export type CodeWorkerEnrollmentPolicy = NonNullable<
 export const DEFAULT_MAX_PROVIDER_ERROR_CHARS = 2000;
 export const DEFAULT_AGENT_MODEL_RESPONSE_BODY_TIMEOUT_MS = 900_000;
 export const DEFAULT_AGENT_MODEL_RESPONSE_HEADERS_TIMEOUT_MS = 300_000;
+export const DEFAULT_CACHE_CLEAR_TIMEOUT_MS = 1000;
 
 export const agentsEndpointSchema = baseEndpointSchema
   .omit({ baseURL: true })
@@ -1378,6 +1379,15 @@ export const agentsEndpointSchema = baseEndpointSchema
             .object({
               /** Content cache TTL for a resolved native prompt link; `0` disables the cache. */
               cacheTtlMs: z.number().int().min(0).max(3_600_000).optional().default(300_000),
+              /** Max wait for the cache clear a prompt write triggers before the write's
+               * response continues without it. */
+              cacheClearTimeoutMs: z
+                .number()
+                .int()
+                .min(1)
+                .max(30_000)
+                .optional()
+                .default(DEFAULT_CACHE_CLEAR_TIMEOUT_MS),
             })
             .optional()
             .default({}),

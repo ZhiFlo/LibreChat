@@ -336,6 +336,32 @@ describe('createPromptHandlers linked-instructions cache clearing', () => {
       );
     });
 
+    it('promote honors a configured timeout shorter than the default', async () => {
+      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+      const invalidateLinkedPrompt = jest.fn().mockReturnValue(new Promise(() => {}));
+      const service = makeService({
+        makePromptProduction: jest.fn().mockResolvedValue({
+          ok: true,
+          value: { message: 'Prompt production made successfully' },
+          groupId,
+        }),
+      });
+      const handlers = createPromptHandlers(makeDeps({ service, invalidateLinkedPrompt }));
+      const res = mockRes();
+      const req = withLoadedRevision({
+        config: {
+          endpoints: { agents: { linkedInstructions: { native: { cacheClearTimeoutMs: 50 } } } },
+        },
+      });
+
+      const pending = handlers.makePromptProduction(req, res);
+      await jest.advanceTimersByTimeAsync(50);
+      await pending;
+
+      expect(res.statusCode).toBe(200);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+    });
+
     it('deletePrompt returns 200 and logs once after the limit when the clear never settles', async () => {
       const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => logger);
       const invalidateLinkedPrompt = jest.fn().mockReturnValue(new Promise(() => {}));
