@@ -418,19 +418,23 @@ export default function AgentPanel() {
   );
 
   const canEdit = hasPermission(PermissionBits.EDIT);
+  /** Same editor-visibility bypass `canEditAgent` grants admins below: an admin can open
+   *  the editor for a linked agent even without ACL EDIT on it. */
+  const hasEditorAccess = canEdit || user?.role === SystemRoles.ADMIN;
 
   const expandedAgentQuery = useGetExpandedAgentByIdQuery(current_agent_id ?? '', {
-    enabled: !isEphemeralAgent(current_agent_id) && canEdit && !permissionsLoading,
+    enabled: !isEphemeralAgent(current_agent_id) && hasEditorAccess && !permissionsLoading,
   });
 
-  const agentQuery = canEdit && expandedAgentQuery.data ? expandedAgentQuery : basicAgentQuery;
+  const agentQuery =
+    hasEditorAccess && expandedAgentQuery.data ? expandedAgentQuery : basicAgentQuery;
 
   const isPersistedAgent = Boolean(current_agent_id) && !isEphemeralAgent(current_agent_id);
   /** `instructionsPrompt` only ever arrives on the expanded query. A persisted,
    *  editable agent stays in a disabled loading (or error) state here until that
    *  query resolves, instead of briefly reading a linked agent as unlinked. */
   let instructionsPromptStatus: InstructionsPromptStatus = 'ready';
-  if (isPersistedAgent && canEdit && !expandedAgentQuery.data) {
+  if (isPersistedAgent && hasEditorAccess && !expandedAgentQuery.data) {
     instructionsPromptStatus = expandedAgentQuery.isError ? 'error' : 'loading';
   }
   const retryInstructionsPrompt = useCallback(() => {
@@ -819,12 +823,8 @@ export default function AgentPanel() {
       return true;
     }
 
-    if (user?.role === SystemRoles.ADMIN) {
-      return true;
-    }
-
-    return canEdit;
-  }, [agentQuery.data?.id, user?.role, canEdit]);
+    return hasEditorAccess;
+  }, [agentQuery.data?.id, hasEditorAccess]);
 
   return (
     <FormProvider {...methods}>

@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { UseFormReturn } from 'react-hook-form';
 import type { Agent } from 'librechat-data-provider';
 import type { AgentForm, AgentModelPanelProps } from '~/common';
+import type { InstructionsPromptStatus } from './Instructions';
 
 // Mock toast context - define this after all mocks
 let mockShowToast: jest.Mock;
@@ -21,6 +22,10 @@ let mockModelPanelProps: Pick<
   'models' | 'modelsError' | 'modelsReady'
 > | null = null;
 let mockFormDefaults: Partial<AgentForm> = {};
+let mockAgentConfigStatus: InstructionsPromptStatus | undefined;
+let mockAgentSelectAgentQueryData: Agent | undefined;
+let mockUserRole = 'USER';
+let mockHasPermission = true;
 let mockAgentPanelContext = {
   activePanel: 'builder',
   agentsConfig: { allowedProviders: [] as string[] },
@@ -121,12 +126,12 @@ jest.mock('~/utils', () => ({
 jest.mock('~/hooks', () => ({
   useSelectAgent: () => ({ onSelect: jest.fn() }),
   useLocalize: () => (key: string) => key,
-  useAuthContext: () => ({ user: { id: 'user-123', role: 'USER' } }),
+  useAuthContext: () => ({ user: { id: 'user-123', role: mockUserRole } }),
 }));
 
 jest.mock('~/hooks/useResourcePermissions', () => ({
   useResourcePermissions: () => ({
-    hasPermission: jest.fn(() => true),
+    hasPermission: jest.fn(() => mockHasPermission),
     isLoading: false,
   }),
 }));
@@ -159,12 +164,18 @@ jest.mock('./Advanced/AdvancedPanel', () => ({
 
 jest.mock('./AgentConfig', () => ({
   __esModule: true,
-  default: () => <div>{`Agent Config`}</div>,
+  default: (props: { instructionsPromptStatus?: InstructionsPromptStatus }) => {
+    mockAgentConfigStatus = props.instructionsPromptStatus;
+    return <div>{`Agent Config - ${props.instructionsPromptStatus ?? 'ready'}`}</div>;
+  },
 }));
 
 jest.mock('./AgentSelect', () => ({
   __esModule: true,
-  default: () => <div>{`Agent Select`}</div>,
+  default: (props: { agentQuery: { data?: Agent } }) => {
+    mockAgentSelectAgentQueryData = props.agentQuery?.data;
+    return <div>{`Agent Select`}</div>;
+  },
 }));
 
 jest.mock('./ModelPanel', () => ({
@@ -319,6 +330,10 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
     mockFormSubmitHandler = null;
     capturedFormMethods = null;
     mockModelPanelProps = null;
+    mockAgentConfigStatus = undefined;
+    mockAgentSelectAgentQueryData = undefined;
+    mockUserRole = 'USER';
+    mockHasPermission = true;
     mockFormDefaults = {};
     mockModelsQuery = {
       data: { openai: ['gpt-4'] },
@@ -440,6 +455,42 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
       await waitFor(() => expect(mockModelPanelProps).not.toBeNull());
       expect(mockModelPanelProps?.models).toEqual({});
       expect(mockModelPanelProps?.modelsError).toBe(true);
+    });
+
+    it('keeps instructions controls loading for an admin without ACL EDIT until the expanded agent arrives', async () => {
+      const { mockUseGetAgentByIdQuery } = setupMocks();
+      mockUserRole = 'ADMIN';
+      mockHasPermission = false;
+
+      mockUseGetAgentByIdQuery.mockReturnValue({
+        data: createMockAgent(),
+        isInitialLoading: false,
+      } as any);
+      const mockUseGetExpandedAgentByIdQuery = useGetExpandedAgentByIdQuery as jest.MockedFunction<
+        typeof useGetExpandedAgentByIdQuery
+      >;
+      mockUseGetExpandedAgentByIdQuery.mockReturnValue({
+        data: undefined,
+        isError: false,
+        refetch: jest.fn(),
+      } as any);
+
+      const Wrapper = createWrapper();
+      const { rerender } = render(<AgentPanel />, { wrapper: Wrapper });
+
+      await waitFor(() => expect(mockAgentConfigStatus).toBe('loading'));
+
+      mockUseGetExpandedAgentByIdQuery.mockReturnValue({
+        data: createMockAgent({ instructions: 'expanded-instructions-prompt' } as any),
+        isError: false,
+        refetch: jest.fn(),
+      } as any);
+      rerender(<AgentPanel />);
+
+      await waitFor(() => expect(mockAgentConfigStatus).toBe('ready'));
+      expect((mockAgentSelectAgentQueryData as any)?.instructions).toBe(
+        'expanded-instructions-prompt',
+      );
     });
 
     it("preserves an existing agent's configured model", async () => {
