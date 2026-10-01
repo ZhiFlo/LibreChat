@@ -171,7 +171,7 @@ describe('checkInstructionsPromptWrite', () => {
         logger,
       });
       expect(result).toBeNull();
-      expect(canUsePrompts).toHaveBeenCalledWith(user);
+      expect(canUsePrompts).toHaveBeenCalledWith(user, undefined);
       expect(validateLinkWrite).not.toHaveBeenCalled();
     });
 
@@ -190,6 +190,36 @@ describe('checkInstructionsPromptWrite', () => {
         body: { error: expect.any(String), code: InstructionsPromptErrorCode.FORBIDDEN },
       });
     });
+
+    it('forwards req to canUsePrompts so its role lookup can share the caller cache', async () => {
+      const canUsePrompts = jest.fn(async () => true);
+      const req = { marker: 'request-handle' };
+      await checkInstructionsPromptWrite({
+        access: { validateLinkWrite: jest.fn(), canUsePrompts },
+        operation: 'duplicate',
+        user,
+        previous: undefined,
+        next: link,
+        logger,
+        req,
+      });
+      expect(canUsePrompts).toHaveBeenCalledWith(user, req);
+    });
+  });
+
+  it('forwards req to validateLinkWrite for create/update/revert so its role lookup can share the caller cache', async () => {
+    const validateLinkWrite = jest.fn(async () => ({ ok: true as const }));
+    const req = { marker: 'request-handle' };
+    await checkInstructionsPromptWrite({
+      access: { validateLinkWrite, canUsePrompts: jest.fn() },
+      operation: 'update',
+      user,
+      previous: otherLink,
+      next: link,
+      logger,
+      req,
+    });
+    expect(validateLinkWrite).toHaveBeenCalledWith(expect.objectContaining({ req }));
   });
 
   describe('an unexpected check failure', () => {

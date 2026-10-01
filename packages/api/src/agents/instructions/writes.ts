@@ -8,6 +8,7 @@ import type {
   InstructionsPromptAccess,
   InstructionsPromptAccessUser,
   InstructionsPromptAccessLogger,
+  InstructionsPromptAccessRequest,
 } from './access';
 import type { InstructionsPromptLinkErrorResponse } from './errors';
 import { getInstructionsPromptLinkError, buildInstructionsPromptError } from './errors';
@@ -61,6 +62,7 @@ export async function checkInstructionsPromptWrite({
   next,
   filters,
   logger,
+  req,
 }: {
   access: Pick<InstructionsPromptAccess, 'validateLinkWrite' | 'canUsePrompts'>;
   operation: InstructionsPromptWriteOperation;
@@ -69,6 +71,9 @@ export async function checkInstructionsPromptWrite({
   next: AgentInstructionsPrompt | null | undefined;
   filters?: FiltersConfig;
   logger: InstructionsPromptAccessLogger;
+  /** Forwarded unexamined to `access.canUsePrompts`/`validateLinkWrite` so the role
+   *  lookup behind them can reuse the caller's per-request role cache. */
+  req?: InstructionsPromptAccessRequest;
 }): Promise<InstructionsPromptLinkErrorResponse | null> {
   if (next === undefined) {
     return null;
@@ -78,7 +83,7 @@ export async function checkInstructionsPromptWrite({
       if (next == null) {
         return null;
       }
-      const allowed = await access.canUsePrompts(user);
+      const allowed = await access.canUsePrompts(user, req);
       return allowed
         ? null
         : buildInstructionsPromptError(403, InstructionsPromptErrorCode.FORBIDDEN);
@@ -90,6 +95,7 @@ export async function checkInstructionsPromptWrite({
       next,
       filters,
       requireResolvable: operation !== 'revert',
+      req,
     });
   } catch (error) {
     if (isContentFilterError(error)) {

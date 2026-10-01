@@ -129,8 +129,9 @@ const instructionsPromptAccess = createInstructionsPromptAccess({
   /** The same role-level gate `checkPromptAccess` applies to every `/prompts` route
    *  (`PermissionTypes.PROMPTS`, `Permissions.USE`). Only `.role` is read, so the
    *  `{ id, role }` identity `validateLinkWrite` carries is enough. */
-  canUsePrompts: (user) =>
+  canUsePrompts: (user, req) =>
     checkAccess({
+      req,
       user,
       permissionType: PermissionTypes.PROMPTS,
       permissions: [Permissions.USE],
@@ -930,6 +931,7 @@ const createAgentHandler = async (req, res) => {
       next: agentData.instructionsPrompt,
       filters: req.config?.filters,
       logger,
+      req,
     });
     if (instructionsPromptError) {
       return res.status(instructionsPromptError.status).json(instructionsPromptError.body);
@@ -1325,6 +1327,7 @@ const updateAgentHandler = async (req, res) => {
       next: instructionsPromptField,
       filters: req.config?.filters,
       logger,
+      req,
     });
     if (instructionsPromptError) {
       return res.status(instructionsPromptError.status).json(instructionsPromptError.body);
@@ -1551,6 +1554,7 @@ const duplicateAgentHandler = async (req, res) => {
       previous: undefined,
       next: agent.instructionsPrompt,
       logger,
+      req,
     });
     if (duplicateInstructionsPromptError) {
       return res
@@ -2277,6 +2281,7 @@ const revertAgentVersionHandler = async (req, res) => {
       next: revertInstructionsPromptLink,
       filters: req.config?.filters,
       logger,
+      req,
     });
     if (revertInstructionsPromptError) {
       return res

@@ -37,13 +37,22 @@ export type AssertAgentInstructionsContent = (input: {
   filters?: FiltersConfig;
 }) => void;
 
+/** Opaque handle to the inbound request, forwarded to `canUsePrompts` only so its
+ *  role lookup (`checkAccess` → `getRoleForAccess`) can reuse the caller's per-request
+ *  role cache instead of re-reading the role document. This module never reads or
+ *  branches on it — kept as `unknown` so it stays decoupled from Express. */
+export type InstructionsPromptAccessRequest = unknown;
+
 /** Whether `user`'s role grants the role-level PROMPTS/USE permission — the same gate
  *  `checkPromptAccess` applies to every `/prompts` route. Injected so this module stays
  *  decoupled from `checkAccess`/`IUser`/`getRoleByName`, the way every other dependency
  *  here is. A PROMPTGROUP VIEW grant on a specific group (`canViewGroup`) says nothing
  *  about this broader, role-level capability — a user can be granted VIEW on one group
  *  by its owner while their role still lacks PROMPTS USE entirely. */
-export type CanUsePrompts = (user: InstructionsPromptAccessUser) => Promise<boolean>;
+export type CanUsePrompts = (
+  user: InstructionsPromptAccessUser,
+  req?: InstructionsPromptAccessRequest,
+) => Promise<boolean>;
 
 export type InstructionsPromptWriteResult =
   | { readonly ok: true }
@@ -68,8 +77,13 @@ export interface InstructionsPromptAccess {
    *  isolation. `checkInstructionsPromptWrite`'s `'duplicate'` operation is the one
    *  write path that needs this: a duplicate copies the source agent's link verbatim,
    *  with no ACL VIEW or resolvability check, but still requires the duplicator's own
-   *  role to grant PROMPTS USE before it may own a newly linked agent. */
-  canUsePrompts(user: InstructionsPromptAccessUser): Promise<boolean>;
+   *  role to grant PROMPTS USE before it may own a newly linked agent. `req` is
+   *  forwarded unexamined so the role lookup behind it can reuse the caller's
+   *  per-request role cache instead of re-reading the role document. */
+  canUsePrompts(
+    user: InstructionsPromptAccessUser,
+    req?: InstructionsPromptAccessRequest,
+  ): Promise<boolean>;
   /**
    * Validates a create/update/revert write of `instructionsPrompt` against the stored
    * link. `next === undefined` means the field is absent from the payload (no change
@@ -89,7 +103,9 @@ export interface InstructionsPromptAccess {
    * A genuinely new or changed `next` (never a removal, never a re-selection of the
    * unchanged value) also requires the role-level PROMPTS `USE` permission
    * (`canUsePrompts`), `FORBIDDEN` otherwise — a PROMPTGROUP `VIEW` grant on one group
-   * says nothing about whether the role may link prompts at all.
+   * says nothing about whether the role may link prompts at all. That role check and
+   * the next-group VIEW check are independent of each other, so both run concurrently
+   * instead of the role check gating the start of the VIEW lookup.
    */
   validateLinkWrite(input: {
     user: InstructionsPromptAccessUser;
@@ -97,6 +113,9 @@ export interface InstructionsPromptAccess {
     next: AgentInstructionsPrompt | null | undefined;
     filters?: FiltersConfig;
     requireResolvable: boolean;
+    /** Forwarded unexamined to `canUsePrompts` so its role lookup can reuse the
+     *  caller's per-request role cache. */
+    req?: InstructionsPromptAccessRequest;
   }): Promise<InstructionsPromptWriteResult>;
   /** Replaces an inaccessible link — on the agent itself and inside every `versions[i]`
    *  snapshot — with a restricted stub before an EDIT-scoped response. Batches every
@@ -308,12 +327,14 @@ export function createInstructionsPromptAccess(deps: {
     next,
     filters,
     requireResolvable,
+    req,
   }: {
     user: InstructionsPromptAccessUser;
     previous: AgentInstructionsPrompt | null | undefined;
     next: AgentInstructionsPrompt | null | undefined;
     filters?: FiltersConfig;
     requireResolvable: boolean;
+    req?: InstructionsPromptAccessRequest;
   }): Promise<InstructionsPromptWriteResult> {
     if (next === undefined) {
       // Field absent from the payload: an unrelated edit keeps an inaccessible link.
@@ -341,17 +362,16 @@ export function createInstructionsPromptAccess(deps: {
       return { ok: true };
     }
     // A genuinely new or changed link (never a removal, and never a re-selection of the
-    // unchanged value — both returned above): the role must grant PROMPTS USE before any
-    // group-specific ACL is even considered. A PROMPTGROUP VIEW grant on `next` says
-    // nothing about this broader, role-level capability.
-    if (!(await canUsePrompts(user))) {
+    // unchanged value — both returned above): the role must grant PROMPTS USE, and the
+    // next group must be VIEWable. The two checks are independent and run concurrently;
+    // a role failure takes precedence over a VIEW failure.
+    const [usable, nextVisible] = await Promise.all([
+      canUsePrompts(user, req),
+      canViewGroup({ userId: user.id, role: user.role, groupId: next.groupId }),
+    ]);
+    if (!usable) {
       return { ok: false, status: 403, code: InstructionsPromptErrorCode.FORBIDDEN };
     }
-    const nextVisible = await canViewGroup({
-      userId: user.id,
-      role: user.role,
-      groupId: next.groupId,
-    });
     if (!nextVisible) {
       // A revert may land on a link whose group has since been deleted — allowed,
       // since the runtime just continues without instructions. A *new* link (any

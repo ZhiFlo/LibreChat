@@ -32,6 +32,7 @@ type VersionedAgent = Pick<
   | 'hide_sequential_outputs'
   | 'subagents'
   | 'memory_scope'
+  | 'instructionsPrompt'
 > & {
   version?: number;
   actions?: string[];
@@ -81,6 +82,7 @@ export function selectLazySubagentConfig(agent: VersionedAgent): Omit<VersionedA
     description,
     instructions,
     additional_instructions,
+    instructionsPrompt,
     endpoint,
     provider,
     model,
@@ -114,6 +116,7 @@ export function selectLazySubagentConfig(agent: VersionedAgent): Omit<VersionedA
     description,
     instructions,
     additional_instructions,
+    instructionsPrompt,
     endpoint,
     provider,
     model,

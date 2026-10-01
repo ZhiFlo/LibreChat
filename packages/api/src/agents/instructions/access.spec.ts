@@ -556,7 +556,10 @@ describe('createInstructionsPromptAccess', () => {
     });
 
     describe('role gate (PROMPTS USE)', () => {
-      it('rejects a new link when the role lacks PROMPTS USE, without checking the group ACL', async () => {
+      it('rejects a new link when the role lacks PROMPTS USE, regardless of the group ACL result', async () => {
+        // The role check and the group ACL lookup now start together; the ACL
+        // lookup's own result is irrelevant here because the role failure
+        // takes precedence in the returned code.
         const { access, map, canUse } = buildAccess({
           visibleGroupIds: new Set([groupId]),
           canUsePromptsResult: false,
@@ -572,8 +575,8 @@ describe('createInstructionsPromptAccess', () => {
           status: 403,
           code: InstructionsPromptErrorCode.FORBIDDEN,
         });
-        expect(canUse).toHaveBeenCalledWith(user);
-        expect(map).not.toHaveBeenCalled();
+        expect(canUse).toHaveBeenCalledWith(user, undefined);
+        expect(map).toHaveBeenCalledTimes(1);
       });
 
       it('rejects changing between two links when the role lacks PROMPTS USE', async () => {
@@ -592,7 +595,7 @@ describe('createInstructionsPromptAccess', () => {
           status: 403,
           code: InstructionsPromptErrorCode.FORBIDDEN,
         });
-        expect(canUse).toHaveBeenCalledWith(user);
+        expect(canUse).toHaveBeenCalledWith(user, undefined);
       });
 
       it('rejects a revert onto a different, previously-unset link when the role lacks PROMPTS USE', async () => {
@@ -611,7 +614,7 @@ describe('createInstructionsPromptAccess', () => {
           status: 403,
           code: InstructionsPromptErrorCode.FORBIDDEN,
         });
-        expect(canUse).toHaveBeenCalledWith(user);
+        expect(canUse).toHaveBeenCalledWith(user, undefined);
       });
 
       it('never checks the role for an unrelated edit (field absent)', async () => {
@@ -665,7 +668,81 @@ describe('createInstructionsPromptAccess', () => {
           requireResolvable: true,
         });
         expect(result).toEqual({ ok: true });
-        expect(canUse).toHaveBeenCalledWith(user);
+        expect(canUse).toHaveBeenCalledWith(user, undefined);
+      });
+
+      it('forwards the opaque req to canUsePrompts so its role lookup can share the caller cache', async () => {
+        const { access, canUse } = buildAccess({ visibleGroupIds: new Set([groupId]) });
+        const req = { marker: 'request-handle' };
+        await access.validateLinkWrite({
+          user,
+          previous: null,
+          next: productionLink,
+          requireResolvable: true,
+          req,
+        });
+        expect(canUse).toHaveBeenCalledWith(user, req);
+      });
+
+      it('starts the role check and the next-group VIEW check concurrently', async () => {
+        /** Deferred promises let the test observe that both lookups are already
+         *  in flight before either has resolved — proof the role check no longer
+         *  gates the start of the VIEW lookup. */
+        let resolveCanUse!: (value: boolean) => void;
+        const canUsePending = new Promise<boolean>((resolve) => {
+          resolveCanUse = resolve;
+        });
+        let resolveMap!: (value: Map<string, number>) => void;
+        const mapPending = new Promise<Map<string, number>>((resolve) => {
+          resolveMap = resolve;
+        });
+        const canUse = jest.fn(() => canUsePending);
+        const map = jest.fn(() => mapPending);
+        const { access } = buildAccess({ canUsePrompts: canUse, getResourcePermissionsMap: map });
+
+        const pending = access.validateLinkWrite({
+          user,
+          previous: null,
+          next: productionLink,
+          requireResolvable: true,
+        });
+
+        // Both lookups must already have been called — neither awaited the other.
+        expect(canUse).toHaveBeenCalledTimes(1);
+        expect(map).toHaveBeenCalledTimes(1);
+
+        resolveCanUse(true);
+        resolveMap(new Map([[groupId, PermissionBits.VIEW]]));
+        await expect(pending).resolves.toEqual({ ok: true });
+      });
+
+      it('keeps the role failure taking precedence over a VIEW failure, even when VIEW resolves first', async () => {
+        // The VIEW lookup resolves (to a passing result) well before the role
+        // check does; the returned code must still be the role-failure code.
+        let resolveCanUse!: (value: boolean) => void;
+        const canUsePending = new Promise<boolean>((resolve) => {
+          resolveCanUse = resolve;
+        });
+        const canUse = jest.fn(() => canUsePending);
+        const { access } = buildAccess({
+          visibleGroupIds: new Set([groupId]),
+          canUsePrompts: canUse,
+        });
+
+        const pending = access.validateLinkWrite({
+          user,
+          previous: null,
+          next: productionLink,
+          requireResolvable: true,
+        });
+        await Promise.resolve(); // let the VIEW lookup (a resolved mock) settle first
+        resolveCanUse(false);
+
+        await expect(pending).resolves.toEqual({
+          ok: false,
+          status: 403,
+          code: InstructionsPromptErrorCode.FORBIDDEN,
+        });
       });
     });
   });

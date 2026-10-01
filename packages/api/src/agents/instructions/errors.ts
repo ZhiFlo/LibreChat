@@ -1,6 +1,10 @@
 import { InstructionsPromptErrorCode } from 'librechat-data-provider';
 import type { AgentInstructionsPrompt, FiltersConfig } from 'librechat-data-provider';
-import type { InstructionsPromptAccess, InstructionsPromptAccessUser } from './access';
+import type {
+  InstructionsPromptAccess,
+  InstructionsPromptAccessUser,
+  InstructionsPromptAccessRequest,
+} from './access';
 
 /** User-safe copy for each stable `instructionsPrompt` write-rejection code. */
 const INSTRUCTIONS_PROMPT_ERROR_MESSAGES: Record<InstructionsPromptErrorCode, string> = {
@@ -44,6 +48,7 @@ export async function getInstructionsPromptLinkError({
   next,
   filters,
   requireResolvable,
+  req,
 }: {
   access: Pick<InstructionsPromptAccess, 'validateLinkWrite'>;
   user: InstructionsPromptAccessUser;
@@ -51,6 +56,9 @@ export async function getInstructionsPromptLinkError({
   next: AgentInstructionsPrompt | null | undefined;
   filters?: FiltersConfig;
   requireResolvable: boolean;
+  /** Forwarded unexamined to `validateLinkWrite` so its role lookup can reuse the
+   *  caller's per-request role cache. */
+  req?: InstructionsPromptAccessRequest;
 }): Promise<InstructionsPromptLinkErrorResponse | null> {
   const result = await access.validateLinkWrite({
     user,
@@ -58,6 +66,7 @@ export async function getInstructionsPromptLinkError({
     next,
     filters,
     requireResolvable,
+    req,
   });
   if (result.ok) {
     return null;
