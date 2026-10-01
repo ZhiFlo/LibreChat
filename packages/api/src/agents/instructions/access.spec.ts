@@ -38,20 +38,26 @@ function buildAccess({
   visibleGroupIds = new Set<string>(),
   deletedGroupIds = new Set<string>(),
   resolvePromptOk = true,
+  canUsePromptsResult = true,
   getResourcePermissionsMap,
   resolvePrompt,
   getPromptGroup,
   assertAgentInstructionsContent,
+  canUsePrompts,
 }: {
   visibleGroupIds?: Set<string>;
   /** Group ids `getPromptGroup` reports as no longer existing (deleted). Every other
    *  id is reported as existing by default, matching `resolvePromptOk`'s default. */
   deletedGroupIds?: Set<string>;
   resolvePromptOk?: boolean;
+  /** Default result for the injected `canUsePrompts` mock when the caller doesn't supply
+   *  its own — most tests here are about the group-specific ACL, not the role gate. */
+  canUsePromptsResult?: boolean;
   getResourcePermissionsMap?: jest.Mock;
   resolvePrompt?: jest.Mock;
   getPromptGroup?: jest.Mock;
   assertAgentInstructionsContent?: jest.Mock;
+  canUsePrompts?: jest.Mock;
 } = {}) {
   const logger = { warn: jest.fn(), error: jest.fn() };
   const map = jest.fn(async ({ resourceIds }: { resourceIds: string[] }) => {
@@ -80,6 +86,7 @@ function buildAccess({
         },
   );
   const assertContent = assertAgentInstructionsContent ?? jest.fn();
+  const canUse = canUsePrompts ?? jest.fn(async () => canUsePromptsResult);
   const access = createInstructionsPromptAccess({
     getResourcePermissionsMap: getResourcePermissionsMap ?? map,
     promptService: {
@@ -87,6 +94,7 @@ function buildAccess({
       getPromptGroup: getPromptGroup ?? getGroup,
     },
     assertAgentInstructionsContent: assertContent,
+    canUsePrompts: canUse,
     logger,
   });
   return {
@@ -95,6 +103,7 @@ function buildAccess({
     resolve: resolvePrompt ?? resolve,
     getGroup: getPromptGroup ?? getGroup,
     assertContent,
+    canUse,
     logger,
   };
 }
@@ -543,6 +552,120 @@ describe('createInstructionsPromptAccess', () => {
             requireResolvable: true,
           }),
         ).rejects.toThrow('unexpected');
+      });
+    });
+
+    describe('role gate (PROMPTS USE)', () => {
+      it('rejects a new link when the role lacks PROMPTS USE, without checking the group ACL', async () => {
+        const { access, map, canUse } = buildAccess({
+          visibleGroupIds: new Set([groupId]),
+          canUsePromptsResult: false,
+        });
+        const result = await access.validateLinkWrite({
+          user,
+          previous: null,
+          next: productionLink,
+          requireResolvable: true,
+        });
+        expect(result).toEqual({
+          ok: false,
+          status: 403,
+          code: InstructionsPromptErrorCode.FORBIDDEN,
+        });
+        expect(canUse).toHaveBeenCalledWith(user);
+        expect(map).not.toHaveBeenCalled();
+      });
+
+      it('rejects changing between two links when the role lacks PROMPTS USE', async () => {
+        const { access, canUse } = buildAccess({
+          visibleGroupIds: new Set([groupId]),
+          canUsePromptsResult: false,
+        });
+        const result = await access.validateLinkWrite({
+          user,
+          previous: productionLink,
+          next: exactLink,
+          requireResolvable: true,
+        });
+        expect(result).toEqual({
+          ok: false,
+          status: 403,
+          code: InstructionsPromptErrorCode.FORBIDDEN,
+        });
+        expect(canUse).toHaveBeenCalledWith(user);
+      });
+
+      it('rejects a revert onto a different, previously-unset link when the role lacks PROMPTS USE', async () => {
+        const { access, canUse } = buildAccess({
+          visibleGroupIds: new Set([groupId]),
+          canUsePromptsResult: false,
+        });
+        const result = await access.validateLinkWrite({
+          user,
+          previous: null,
+          next: productionLink,
+          requireResolvable: false,
+        });
+        expect(result).toEqual({
+          ok: false,
+          status: 403,
+          code: InstructionsPromptErrorCode.FORBIDDEN,
+        });
+        expect(canUse).toHaveBeenCalledWith(user);
+      });
+
+      it('never checks the role for an unrelated edit (field absent)', async () => {
+        const { access, canUse } = buildAccess({ canUsePromptsResult: false });
+        const result = await access.validateLinkWrite({
+          user,
+          previous: otherGroupLink,
+          next: undefined,
+          requireResolvable: true,
+        });
+        expect(result).toEqual({ ok: true });
+        expect(canUse).not.toHaveBeenCalled();
+      });
+
+      it('never checks the role for removing a link the editor can VIEW', async () => {
+        const { access, canUse } = buildAccess({
+          visibleGroupIds: new Set([groupId]),
+          canUsePromptsResult: false,
+        });
+        const result = await access.validateLinkWrite({
+          user,
+          previous: productionLink,
+          next: null,
+          requireResolvable: true,
+        });
+        expect(result).toEqual({ ok: true });
+        expect(canUse).not.toHaveBeenCalled();
+      });
+
+      it('never checks the role for re-selecting the unchanged value', async () => {
+        const { access, canUse } = buildAccess({ canUsePromptsResult: false });
+        const result = await access.validateLinkWrite({
+          user,
+          previous: otherGroupLink,
+          next: { ...otherGroupLink },
+          requireResolvable: true,
+        });
+        expect(result).toEqual({ ok: true });
+        expect(canUse).not.toHaveBeenCalled();
+      });
+
+      it('accepts a new link when the role has PROMPTS USE and the group is viewable', async () => {
+        const { access, canUse } = buildAccess({
+          visibleGroupIds: new Set([groupId]),
+          canUsePromptsResult: true,
+        });
+        const result = await access.validateLinkWrite({
+          user,
+          previous: null,
+          next: productionLink,
+          requireResolvable: true,
+        });
+        expect(result).toEqual({ ok: true });
+        expect(canUse).toHaveBeenCalledWith(user);
       });
     });
   });

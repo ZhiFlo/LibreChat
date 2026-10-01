@@ -5828,6 +5828,91 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           const persisted = await Agent.findOne({ id: agent.id }).lean();
           expect(persisted.instructions).toBeUndefined();
         });
+
+        test('rejects removing a link over stored disallowed inline text the update never resends', async () => {
+          const { groupId } = await createPromptGroupFixture('Removal Scan Blocked Group');
+          mockGroupVisibility(new Set([groupId]));
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Linked With Dead Text',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructions: blockedInstructions,
+            instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+          });
+
+          mockReq.config = { filters: blockedFilters };
+          mockReq.params = { id: agent.id };
+          // Only the link is touched; `instructions` is not resent, so the stored
+          // text — never scanned while the link stayed valid — must fall in.
+          mockReq.body = { instructionsPrompt: null };
+
+          await updateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).toHaveBeenCalledWith(400);
+          const persisted = await Agent.findOne({ id: agent.id }).lean();
+          // The write never applied: the link and stored text are untouched.
+          expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+          expect(persisted.instructions).toBe(blockedInstructions);
+        });
+
+        test('allows removing a link over stored allowed inline text', async () => {
+          const { groupId } = await createPromptGroupFixture('Removal Scan Allowed Group');
+          mockGroupVisibility(new Set([groupId]));
+          const allowedInstructions = 'Be helpful and concise.';
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Linked With Allowed Text',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructions: allowedInstructions,
+            instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+          });
+
+          mockReq.config = { filters: blockedFilters };
+          mockReq.params = { id: agent.id };
+          mockReq.body = { instructionsPrompt: null };
+
+          await updateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).not.toHaveBeenCalledWith(400);
+          expect(mockRes.status).not.toHaveBeenCalledWith(403);
+          const persisted = await Agent.findOne({ id: agent.id }).lean();
+          expect(persisted.instructionsPrompt).toBeUndefined();
+          expect(persisted.instructions).toBe(allowedInstructions);
+        });
+
+        test('allows removing a link while sending new allowed instructions over stored disallowed text', async () => {
+          const { groupId } = await createPromptGroupFixture('Removal Scan Replace Group');
+          mockGroupVisibility(new Set([groupId]));
+          const newInstructions = 'Be helpful and concise.';
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Linked, Replacing Dead Text',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructions: blockedInstructions,
+            instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+          });
+
+          mockReq.config = { filters: blockedFilters };
+          mockReq.params = { id: agent.id };
+          mockReq.body = { instructions: newInstructions, instructionsPrompt: null };
+
+          await updateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).not.toHaveBeenCalledWith(400);
+          expect(mockRes.status).not.toHaveBeenCalledWith(403);
+          const persisted = await Agent.findOne({ id: agent.id }).lean();
+          expect(persisted.instructionsPrompt).toBeUndefined();
+          expect(persisted.instructions).toBe(newInstructions);
+        });
       });
     });
 
@@ -6002,6 +6087,58 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         const response = mockRes.json.mock.calls[0][0];
         expect(response.agent.instructionsPrompt).toEqual({ source: 'native', restricted: true });
         expect(await Agent.countDocuments({})).toBe(2);
+      });
+
+      describe('save-time content scan when a link governs the source agent', () => {
+        const blockedInstructions = 'Use sk-private-token for requests';
+        const blockedFilters = {
+          agentInstructions: { pii: { starterPatterns: ['sk_prefix'] } },
+        };
+
+        test('excludes the copied (dead) inline instructions from the scan when the source is linked', async () => {
+          const { groupId } = await createPromptGroupFixture('Duplicate Scan Safe Group');
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Linked Source With Dead Text',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructions: blockedInstructions,
+            instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+          });
+
+          mockReq.config = { filters: blockedFilters };
+          mockReq.params = { id: agent.id };
+
+          await duplicateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).toHaveBeenCalledWith(201);
+          const newAgentId = mockRes.json.mock.calls[0][0].agent.id;
+          const persisted = await Agent.findOne({ id: newAgentId }).lean();
+          expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+          expect(persisted.instructions).toBe(blockedInstructions);
+        });
+
+        test('still rejects duplicating an unlinked agent whose inline text is blocked', async () => {
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Unlinked Source With Blocked Text',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructions: blockedInstructions,
+          });
+
+          mockReq.config = { filters: blockedFilters };
+          mockReq.params = { id: agent.id };
+
+          await duplicateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).toHaveBeenCalledWith(400);
+          expect(await Agent.countDocuments({})).toBe(1);
+        });
       });
     });
 
@@ -6345,6 +6482,45 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         expect(persisted.instructionsPrompt.groupId).toBe(groupId);
         expect(persisted.instructions).toBe(blockedInstructions);
       });
+
+      test('rejects a revert that removes the current link, landing on a snapshot whose own stored inline text is blocked', async () => {
+        const { groupId } = await createPromptGroupFixture('Revert Removal Scan Group');
+        mockGroupVisibility(new Set([groupId]));
+        const blockedInstructions = 'Use sk-private-token for requests';
+        const agentId = `agent_${nanoid()}`;
+        await Agent.create({
+          id: agentId,
+          author: mockReq.user.id,
+          name: 'Currently Linked Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+          versions: [
+            {
+              name: 'Pre-Link Snapshot With Dead Text',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+              instructions: blockedInstructions,
+            },
+          ],
+        });
+
+        mockReq.config = {
+          filters: { agentInstructions: { pii: { starterPatterns: ['sk_prefix'] } } },
+        };
+        mockReq.params = { id: agentId };
+        mockReq.body = { version_index: 0 };
+
+        await revertAgentVersionHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(400);
+        const persisted = await Agent.findOne({ id: agentId }).lean();
+        // The revert never applied: the current link and the snapshot are untouched.
+        expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+        expect(persisted.versions[0].instructions).toBe(blockedInstructions);
+      });
     });
 
     describe('getAgentVersionsHandler', () => {
@@ -6501,6 +6677,140 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         expect(mockRes.status).toHaveBeenCalledWith(201);
         const response = mockRes.json.mock.calls[0][0];
         expect(response.instructionsPrompt).toEqual(instructionsPrompt);
+      });
+    });
+
+    describe('role gate (PROMPTS USE)', () => {
+      /** `getRoleByName` auto-creates a missing system role from defaults (which grant
+       *  PROMPTS USE), so a role document must already exist to override it. Resets
+       *  after each test so later tests see the auto-created default again. */
+      const setPromptsUse = (allowed) =>
+        mongoose.models.Role.findOneAndUpdate(
+          { name: 'USER' },
+          {
+            $set: {
+              name: 'USER',
+              [`permissions.${PermissionTypes.PROMPTS}.${Permissions.USE}`]: allowed,
+            },
+          },
+          { upsert: true },
+        );
+
+      afterEach(async () => {
+        await mongoose.models.Role.deleteMany({ name: 'USER' });
+      });
+
+      test('returns 403 instructions_prompt_forbidden for a new link when the role lacks PROMPTS USE', async () => {
+        const { groupId } = await createPromptGroupFixture('Role Gate New Link Group');
+        mockGroupVisibility(new Set([groupId]));
+        await setPromptsUse(false);
+
+        mockReq.body = {
+          name: 'No Prompts Permission Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+        };
+
+        await createAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(403);
+        expect(mockRes.json).toHaveBeenCalledWith({
+          error: expect.any(String),
+          code: InstructionsPromptErrorCode.FORBIDDEN,
+        });
+        expect(await Agent.countDocuments()).toBe(0);
+      });
+
+      test('returns 403 instructions_prompt_forbidden when changing to a different link and the role lacks PROMPTS USE', async () => {
+        const { groupId: currentGroupId } =
+          await createPromptGroupFixture('Role Gate Current Group');
+        const { groupId: nextGroupId } = await createPromptGroupFixture('Role Gate Next Group');
+        mockGroupVisibility(new Set([currentGroupId, nextGroupId]));
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Currently Linked Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: {
+            source: 'native',
+            groupId: currentGroupId,
+            selection: { type: 'production' },
+          },
+        });
+        await setPromptsUse(false);
+
+        mockReq.params = { id: agent.id };
+        mockReq.body = {
+          instructionsPrompt: {
+            source: 'native',
+            groupId: nextGroupId,
+            selection: { type: 'production' },
+          },
+        };
+
+        await updateAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(403);
+        expect(mockRes.json).toHaveBeenCalledWith({
+          error: expect.any(String),
+          code: InstructionsPromptErrorCode.FORBIDDEN,
+        });
+        const persisted = await Agent.findOne({ id: agent.id }).lean();
+        expect(persisted.instructionsPrompt.groupId).toBe(currentGroupId);
+      });
+
+      test('still allows removing a link when the role lacks PROMPTS USE', async () => {
+        const { groupId } = await createPromptGroupFixture('Role Gate Removal Group');
+        mockGroupVisibility(new Set([groupId]));
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Linked Agent For Removal',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+        });
+        await setPromptsUse(false);
+
+        mockReq.params = { id: agent.id };
+        mockReq.body = { instructionsPrompt: null };
+
+        await updateAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
+        const persisted = await Agent.findOne({ id: agent.id }).lean();
+        expect(persisted.instructionsPrompt).toBeUndefined();
+      });
+
+      test('still allows an unrelated edit that leaves an inaccessible-role link untouched', async () => {
+        const { groupId } = await createPromptGroupFixture('Role Gate Unrelated Edit Group');
+        mockGroupVisibility(new Set([groupId]));
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Linked Agent For Unrelated Edit',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+        });
+        await setPromptsUse(false);
+
+        mockReq.params = { id: agent.id };
+        mockReq.body = { name: 'Renamed Without Prompts Permission' };
+
+        await updateAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
+        const persisted = await Agent.findOne({ id: agent.id }).lean();
+        expect(persisted.name).toBe('Renamed Without Prompts Permission');
+        expect(persisted.instructionsPrompt.groupId).toBe(groupId);
       });
     });
   });

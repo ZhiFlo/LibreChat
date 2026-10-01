@@ -55,6 +55,7 @@ const {
   effectiveInstructionsPromptLink,
   excludeInstructionsWhenLinked,
   assertModelBoundContent,
+  checkAccess,
 } = require('@librechat/api');
 const {
   Time,
@@ -62,8 +63,10 @@ const {
   SkillsScope,
   CacheKeys,
   Constants,
+  Permissions,
   FileSources,
   ResourceType,
+  PermissionTypes,
   AccessRoleIds,
   PrincipalType,
   EToolResources,
@@ -123,6 +126,16 @@ const instructionsPromptAccess = createInstructionsPromptAccess({
   promptService: createPromptService({ db, grantPermission }),
   assertAgentInstructionsContent: ({ instructions, filters }) =>
     assertModelBoundContent({ filters, agents: [{ instructions }] }),
+  /** The same role-level gate `checkPromptAccess` applies to every `/prompts` route
+   *  (`PermissionTypes.PROMPTS`, `Permissions.USE`). Only `.role` is read, so the
+   *  `{ id, role }` identity `validateLinkWrite` carries is enough. */
+  canUsePrompts: (user) =>
+    checkAccess({
+      user,
+      permissionType: PermissionTypes.PROMPTS,
+      permissions: [Permissions.USE],
+      getRoleByName: db.getRoleByName,
+    }),
   logger,
 });
 
@@ -1330,6 +1343,8 @@ const updateAgentHandler = async (req, res) => {
     }
 
     // Dead once linked (see `initializeAgent`), so it can't block a switch to a safe link.
+    // Live again once the link is removed — fall back to the stored `instructions`
+    // (never scanned while the link stayed valid) when the payload doesn't send its own.
     const effectiveInstructionsLink = effectiveInstructionsPromptLink(
       instructionsPromptField,
       existingAgent.instructionsPrompt,
@@ -1338,7 +1353,11 @@ const updateAgentHandler = async (req, res) => {
       await blockFilteredAgentContent(
         req,
         res,
-        excludeInstructionsWhenLinked(updateData, effectiveInstructionsLink),
+        excludeInstructionsWhenLinked(
+          updateData,
+          effectiveInstructionsLink,
+          existingAgent.instructions,
+        ),
       )
     ) {
       return;
@@ -1672,8 +1691,14 @@ const duplicateAgentHandler = async (req, res) => {
       newAgentData.tool_options = removeCodeExecutionCaller(newAgentData.tool_options);
     }
 
+    // Dead once linked (see `initializeAgent`), so it can't block a duplicate that copies
+    // the source's link verbatim — no removal happens here, so no fallback is needed.
     if (
-      (await blockFilteredAgentContent(req, res, newAgentData)) ||
+      (await blockFilteredAgentContent(
+        req,
+        res,
+        excludeInstructionsWhenLinked(newAgentData, newAgentData.instructionsPrompt),
+      )) ||
       blockFilteredActionContent(req, res, sanitizedActions)
     ) {
       return;

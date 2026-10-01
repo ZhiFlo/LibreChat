@@ -37,6 +37,14 @@ export type AssertAgentInstructionsContent = (input: {
   filters?: FiltersConfig;
 }) => void;
 
+/** Whether `user`'s role grants the role-level PROMPTS/USE permission — the same gate
+ *  `checkPromptAccess` applies to every `/prompts` route. Injected so this module stays
+ *  decoupled from `checkAccess`/`IUser`/`getRoleByName`, the way every other dependency
+ *  here is. A PROMPTGROUP VIEW grant on a specific group (`canViewGroup`) says nothing
+ *  about this broader, role-level capability — a user can be granted VIEW on one group
+ *  by its owner while their role still lacks PROMPTS USE entirely. */
+export type CanUsePrompts = (user: InstructionsPromptAccessUser) => Promise<boolean>;
+
 export type InstructionsPromptWriteResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly status: 400 | 403; readonly code: InstructionsPromptErrorCode };
@@ -70,6 +78,11 @@ export interface InstructionsPromptAccess {
    * still `FORBIDDEN` whether or not it exists, unless `requireResolvable` is false
    * (a revert), in which case reverting onto a link whose group no longer exists is
    * allowed — the runtime simply continues without instructions.
+   *
+   * A genuinely new or changed `next` (never a removal, never a re-selection of the
+   * unchanged value) also requires the role-level PROMPTS `USE` permission
+   * (`canUsePrompts`), `FORBIDDEN` otherwise — a PROMPTGROUP `VIEW` grant on one group
+   * says nothing about whether the role may link prompts at all.
    */
   validateLinkWrite(input: {
     user: InstructionsPromptAccessUser;
@@ -164,9 +177,16 @@ export function createInstructionsPromptAccess(deps: {
   getResourcePermissionsMap: GetResourcePermissionsMap;
   promptService: Pick<PromptService, 'resolvePrompt' | 'getPromptGroup'>;
   assertAgentInstructionsContent: AssertAgentInstructionsContent;
+  canUsePrompts: CanUsePrompts;
   logger: InstructionsPromptAccessLogger;
 }): InstructionsPromptAccess {
-  const { getResourcePermissionsMap, promptService, assertAgentInstructionsContent, logger } = deps;
+  const {
+    getResourcePermissionsMap,
+    promptService,
+    assertAgentInstructionsContent,
+    canUsePrompts,
+    logger,
+  } = deps;
 
   /** Whether `groupId` still has a stored group record — a tenant-scoped, ACL-free
    *  read, unlike `canViewGroup`. `deletePromptGroup` removes every ACL entry for a
@@ -309,6 +329,13 @@ export function createInstructionsPromptAccess(deps: {
       // Removing a link the editor could VIEW (or that never existed, or no longer
       // exists) is always allowed.
       return { ok: true };
+    }
+    // A genuinely new or changed link (never a removal, and never a re-selection of the
+    // unchanged value — both returned above): the role must grant PROMPTS USE before any
+    // group-specific ACL is even considered. A PROMPTGROUP VIEW grant on `next` says
+    // nothing about this broader, role-level capability.
+    if (!(await canUsePrompts(user))) {
+      return { ok: false, status: 403, code: InstructionsPromptErrorCode.FORBIDDEN };
     }
     const nextVisible = await canViewGroup({
       userId: user.id,

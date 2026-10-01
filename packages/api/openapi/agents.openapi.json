@@ -1984,61 +1984,6 @@
               "null"
             ]
           },
-          "instructionsPrompt": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "properties": {
-              "source": {
-                "type": "string",
-                "const": "native"
-              },
-              "groupId": {
-                "type": "string"
-              },
-              "selection": {
-                "oneOf": [
-                  {
-                    "type": "object",
-                    "properties": {
-                      "type": {
-                        "type": "string",
-                        "const": "production"
-                      }
-                    },
-                    "required": [
-                      "type"
-                    ],
-                    "additionalProperties": false
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "type": {
-                        "type": "string",
-                        "const": "exact"
-                      },
-                      "promptId": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "type",
-                      "promptId"
-                    ],
-                    "additionalProperties": false
-                  }
-                ]
-              }
-            },
-            "required": [
-              "source",
-              "groupId",
-              "selection"
-            ],
-            "additionalProperties": false
-          },
           "avatar": {
             "type": [
               "object",
@@ -2488,61 +2433,6 @@
           "instructions": {
             "type": "string"
           },
-          "instructionsPrompt": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "properties": {
-              "source": {
-                "type": "string",
-                "const": "native"
-              },
-              "groupId": {
-                "type": "string"
-              },
-              "selection": {
-                "oneOf": [
-                  {
-                    "type": "object",
-                    "properties": {
-                      "type": {
-                        "type": "string",
-                        "const": "production"
-                      }
-                    },
-                    "required": [
-                      "type"
-                    ],
-                    "additionalProperties": false
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "type": {
-                        "type": "string",
-                        "const": "exact"
-                      },
-                      "promptId": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "type",
-                      "promptId"
-                    ],
-                    "additionalProperties": false
-                  }
-                ]
-              }
-            },
-            "required": [
-              "source",
-              "groupId",
-              "selection"
-            ],
-            "additionalProperties": false
-          },
           "avatar": {
             "type": "null"
           },
@@ -2986,61 +2876,6 @@
               "string",
               "null"
             ]
-          },
-          "instructionsPrompt": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "properties": {
-              "source": {
-                "type": "string",
-                "const": "native"
-              },
-              "groupId": {
-                "type": "string"
-              },
-              "selection": {
-                "oneOf": [
-                  {
-                    "type": "object",
-                    "properties": {
-                      "type": {
-                        "type": "string",
-                        "const": "production"
-                      }
-                    },
-                    "required": [
-                      "type"
-                    ],
-                    "additionalProperties": false
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "type": {
-                        "type": "string",
-                        "const": "exact"
-                      },
-                      "promptId": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "type",
-                      "promptId"
-                    ],
-                    "additionalProperties": false
-                  }
-                ]
-              }
-            },
-            "required": [
-              "source",
-              "groupId",
-              "selection"
-            ],
-            "additionalProperties": false
           },
           "avatar": {
             "anyOf": [

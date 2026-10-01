@@ -84,18 +84,33 @@ export function effectiveInstructionsPromptLink(
 }
 
 /**
- * Excludes `instructions` from a save-time content scan when `effectiveLink`
- * is a real link (`isValidInstructionsPromptLink` — the same shape test
- * `initializeAgent` uses): that text is dead once a link governs the agent,
- * so it must not block a write that is otherwise switching to safe, linked
- * content. Every other field of `data` is returned unchanged.
+ * Resolves what a save-time content scan should see for `instructions`,
+ * given the link that will actually govern the agent after this write.
+ *
+ * Excludes `instructions` when `effectiveLink` is a real link
+ * (`isValidInstructionsPromptLink` — the same shape test `initializeAgent`
+ * uses): that text is dead once a link governs the agent, so it must not
+ * block a write that is otherwise switching to safe, linked content.
+ *
+ * When `effectiveLink` is not a real link — including a write that removes a
+ * previously valid link — the agent's inline `instructions` become live text
+ * again. The payload's own `instructions` is scanned as-is when present;
+ * otherwise `fallbackInstructions` fills in the text that will keep running
+ * (`existingAgent.instructions` for an update, the reverted snapshot's own
+ * `instructions` for a revert) so it is scanned before it goes live rather
+ * than never — it was excluded from scanning at every write made while the
+ * link stayed valid. Every other field of `data` is returned unchanged.
  */
 export function excludeInstructionsWhenLinked<T extends { instructions?: unknown }>(
   data: T,
   effectiveLink: AgentInstructionsPrompt | RestrictedAgentInstructionsPrompt | null | undefined,
+  fallbackInstructions?: unknown,
 ): T {
-  if (!isValidInstructionsPromptLink(effectiveLink)) {
-    return data;
+  if (isValidInstructionsPromptLink(effectiveLink)) {
+    return { ...data, instructions: undefined };
   }
-  return { ...data, instructions: undefined };
+  if (data.instructions === undefined && fallbackInstructions !== undefined) {
+    return { ...data, instructions: fallbackInstructions };
+  }
+  return data;
 }

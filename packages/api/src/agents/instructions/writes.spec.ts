@@ -183,4 +183,28 @@ describe('excludeInstructionsWhenLinked', () => {
     const data = { instructions: 'inline text' };
     expect(excludeInstructionsWhenLinked(data, restrictedStub)).toBe(data);
   });
+
+  it('falls back to the stored instructions when the payload sends none and the link is removed', () => {
+    const data = { instructions: undefined, name: 'Agent' };
+    const result = excludeInstructionsWhenLinked(data, null, 'stored inline text');
+    expect(result).toEqual({ instructions: 'stored inline text', name: 'Agent' });
+  });
+
+  it('prefers the payload instructions over the fallback when both are present', () => {
+    const data = { instructions: 'new inline text', name: 'Agent' };
+    const result = excludeInstructionsWhenLinked(data, null, 'stored inline text');
+    expect(result).toBe(data);
+  });
+
+  it('leaves instructions untouched when there is no fallback and none in the payload', () => {
+    const data = { instructions: undefined, name: 'Agent' };
+    expect(excludeInstructionsWhenLinked(data, null)).toBe(data);
+    expect(excludeInstructionsWhenLinked(data, undefined)).toBe(data);
+  });
+
+  it('never falls back when the effective link is a real link', () => {
+    const data = { instructions: undefined, name: 'Agent' };
+    const result = excludeInstructionsWhenLinked(data, link, 'stored inline text');
+    expect(result).toEqual({ instructions: undefined, name: 'Agent' });
+  });
 });
