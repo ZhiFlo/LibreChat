@@ -530,10 +530,14 @@ export default function AgentPanel() {
     lastLoadedInstructionsPromptRef.current = null;
   }, [current_agent_id]);
   useEffect(() => {
-    if (agentQuery.data) {
+    /** Only a 'ready' status carries data that can speak to the link: the expanded
+     *  query resolved, or editor access doesn't apply and the basic query is all
+     *  there is. A pending or failed expanded query must not overwrite the ref with
+     *  the basic projection's `undefined`. */
+    if (instructionsPromptStatus === 'ready' && agentQuery.data) {
       lastLoadedInstructionsPromptRef.current = agentQuery.data.instructionsPrompt ?? null;
     }
-  }, [agentQuery.data]);
+  }, [agentQuery.data, instructionsPromptStatus]);
 
   const allowedProviders = useMemo(
     () => new Set(agentsConfig?.allowedProviders),
@@ -723,11 +727,18 @@ export default function AgentPanel() {
     async (data: AgentForm) => {
       const tools = Array.from(new Set([...(data.tools ?? []), ...resolveCapabilityTools(data)]));
 
-      const instructionsPromptChanged = computeInstructionsPromptChanged(
-        data.instructionsSource,
-        data.instructionsPrompt,
-        lastLoadedInstructionsPromptRef.current,
-      );
+      /** A persisted agent whose expanded query hasn't resolved (or failed) carries no
+       *  trustworthy link to diff against: the form may still hold the previously
+       *  selected agent's link (see `AgentSelect`). Force the flag false so the save
+       *  cannot patch that stale link onto this agent; other fields still save. */
+      const instructionsPromptChanged =
+        agent_id && instructionsPromptStatus !== 'ready'
+          ? false
+          : computeInstructionsPromptChanged(
+              data.instructionsSource,
+              data.instructionsPrompt,
+              lastLoadedInstructionsPromptRef.current,
+            );
       const {
         payload: basePayload,
         provider,
@@ -802,6 +813,7 @@ export default function AgentPanel() {
       dirtyFields,
       endpointsConfig,
       handleAvatarUpload,
+      instructionsPromptStatus,
       models,
       modelsError,
       modelsReady,

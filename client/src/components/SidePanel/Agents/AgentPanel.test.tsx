@@ -480,17 +480,20 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
 
       await waitFor(() => expect(mockAgentConfigStatus).toBe('loading'));
 
+      const link = {
+        source: 'native' as const,
+        groupId: '507f1f77bcf86cd799439011',
+        selection: { type: 'production' as const },
+      };
       mockUseGetExpandedAgentByIdQuery.mockReturnValue({
-        data: createMockAgent({ instructions: 'expanded-instructions-prompt' } as any),
+        data: createMockAgent({ instructionsPrompt: link }),
         isError: false,
         refetch: jest.fn(),
       } as any);
       rerender(<AgentPanel />);
 
       await waitFor(() => expect(mockAgentConfigStatus).toBe('ready'));
-      expect((mockAgentSelectAgentQueryData as any)?.instructions).toBe(
-        'expanded-instructions-prompt',
-      );
+      expect(mockAgentSelectAgentQueryData?.instructionsPrompt).toEqual(link);
     });
 
     it("preserves an existing agent's configured model", async () => {
@@ -998,6 +1001,157 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
         await waitFor(() => expect(mockUpdateAgent).toHaveBeenCalledTimes(1));
         expect(mockUpdateAgent.mock.calls[0][0].agent_id).toBe('agent-B');
         expect(mockUpdateAgent.mock.calls[0][0].data).not.toHaveProperty('instructionsPrompt');
+      });
+
+      it("withholds instructionsPrompt from a save made while the newly selected agent's expanded query is still loading", async () => {
+        /** Regression: `AgentSelect`'s `instructionsPromptReady` false branch keeps the
+         *  form's prior link instead of clearing it, so switching to agent B while its
+         *  expanded query is still pending leaves the form holding agent A's link. Saving
+         *  any other field before that query resolves must not patch the stale link onto
+         *  agent B. */
+        const { mockUseGetAgentByIdQuery, mockUpdateAgent } = setupMocks();
+        const mockUseGetExpandedAgentByIdQuery =
+          useGetExpandedAgentByIdQuery as jest.MockedFunction<typeof useGetExpandedAgentByIdQuery>;
+
+        // Agent A is open, linked to group_1.
+        mockAgentPanelContext = { ...mockAgentPanelContext, agent_id: 'agent-A' };
+        mockAgentQuery(mockUseGetAgentByIdQuery, {
+          id: 'agent-A',
+          name: 'Agent A',
+          version: 2,
+          instructionsPrompt: link,
+        });
+        mockFormDefaults = {
+          id: 'agent-A',
+          instructionsSource: 'prompt',
+          instructionsPrompt: link,
+        };
+
+        const Wrapper = createWrapper();
+        const { container, rerender } = render(<AgentPanel />, { wrapper: Wrapper });
+
+        // Switch to agent B: its basic query resolves but the expanded query is still pending.
+        mockAgentPanelContext = { ...mockAgentPanelContext, agent_id: 'agent-B' };
+        mockUseGetAgentByIdQuery.mockReturnValue({
+          data: createMockAgent({ id: 'agent-B', name: 'Agent B', version: 1 }),
+          isInitialLoading: false,
+        } as any);
+        mockUseGetExpandedAgentByIdQuery.mockReturnValue({
+          data: undefined,
+          isError: false,
+          refetch: jest.fn(),
+        } as any);
+        rerender(<AgentPanel />);
+
+        await waitFor(() => expect(mockAgentConfigStatus).toBe('loading'));
+
+        // The form keeps agent A's link; the user edits an unrelated field and saves.
+        act(() => {
+          capturedFormMethods!.setValue('id', 'agent-B', { shouldDirty: false });
+          capturedFormMethods!.setValue('name', 'Renamed B', { shouldDirty: true });
+        });
+
+        mockUpdateAgent.mockResolvedValueOnce(
+          createMockAgent({ id: 'agent-B', name: 'Renamed B', version: 1 }),
+        );
+
+        fireEvent.submit(container.querySelector('form')!);
+        await act(async () => {
+          mockFormSubmitHandler?.();
+        });
+
+        await waitFor(() => expect(mockUpdateAgent).toHaveBeenCalledTimes(1));
+        expect(mockUpdateAgent.mock.calls[0][0].agent_id).toBe('agent-B');
+        expect(mockUpdateAgent.mock.calls[0][0].data).not.toHaveProperty('instructionsPrompt');
+      });
+
+      it("withholds instructionsPrompt from a save made while the newly selected agent's expanded query errored", async () => {
+        const { mockUseGetAgentByIdQuery, mockUpdateAgent } = setupMocks();
+        const mockUseGetExpandedAgentByIdQuery =
+          useGetExpandedAgentByIdQuery as jest.MockedFunction<typeof useGetExpandedAgentByIdQuery>;
+
+        // Agent A is open, linked to group_1.
+        mockAgentPanelContext = { ...mockAgentPanelContext, agent_id: 'agent-A' };
+        mockAgentQuery(mockUseGetAgentByIdQuery, {
+          id: 'agent-A',
+          name: 'Agent A',
+          version: 2,
+          instructionsPrompt: link,
+        });
+        mockFormDefaults = {
+          id: 'agent-A',
+          instructionsSource: 'prompt',
+          instructionsPrompt: link,
+        };
+
+        const Wrapper = createWrapper();
+        const { container, rerender } = render(<AgentPanel />, { wrapper: Wrapper });
+
+        // Switch to agent B: its expanded query fails outright.
+        mockAgentPanelContext = { ...mockAgentPanelContext, agent_id: 'agent-B' };
+        mockUseGetAgentByIdQuery.mockReturnValue({
+          data: createMockAgent({ id: 'agent-B', name: 'Agent B', version: 1 }),
+          isInitialLoading: false,
+        } as any);
+        mockUseGetExpandedAgentByIdQuery.mockReturnValue({
+          data: undefined,
+          isError: true,
+          refetch: jest.fn(),
+        } as any);
+        rerender(<AgentPanel />);
+
+        await waitFor(() => expect(mockAgentConfigStatus).toBe('error'));
+
+        act(() => {
+          capturedFormMethods!.setValue('id', 'agent-B', { shouldDirty: false });
+          capturedFormMethods!.setValue('name', 'Renamed B', { shouldDirty: true });
+        });
+
+        mockUpdateAgent.mockResolvedValueOnce(
+          createMockAgent({ id: 'agent-B', name: 'Renamed B', version: 1 }),
+        );
+
+        fireEvent.submit(container.querySelector('form')!);
+        await act(async () => {
+          mockFormSubmitHandler?.();
+        });
+
+        await waitFor(() => expect(mockUpdateAgent).toHaveBeenCalledTimes(1));
+        expect(mockUpdateAgent.mock.calls[0][0].agent_id).toBe('agent-B');
+        expect(mockUpdateAgent.mock.calls[0][0].data).not.toHaveProperty('instructionsPrompt');
+      });
+
+      it('sends instructionsPrompt once the expanded query is ready and the link actually changed', async () => {
+        const { mockUseGetAgentByIdQuery, mockUpdateAgent } = setupMocks();
+
+        mockAgentQuery(mockUseGetAgentByIdQuery, {
+          name: 'Test Agent',
+          version: 2,
+          instructionsPrompt: null,
+        });
+        mockFormDefaults = { instructionsSource: 'inline', instructionsPrompt: null };
+
+        mockUpdateAgent.mockResolvedValueOnce(
+          createMockAgent({ name: 'Test Agent', version: 2, instructionsPrompt: link }),
+        );
+
+        const Wrapper = createWrapper();
+        const { container } = render(<AgentPanel />, { wrapper: Wrapper });
+
+        await waitFor(() => expect(mockAgentConfigStatus).toBe('ready'));
+
+        act(() => {
+          capturedFormMethods!.setValue('instructionsSource', 'prompt', { shouldDirty: true });
+          capturedFormMethods!.setValue('instructionsPrompt', link, { shouldDirty: true });
+        });
+
+        fireEvent.submit(container.querySelector('form')!);
+        await act(async () => {
+          mockFormSubmitHandler?.();
+        });
+
+        await waitFor(() => expect(mockUpdateAgent).toHaveBeenCalledTimes(1));
+        expect(mockUpdateAgent.mock.calls[0][0].data).toHaveProperty('instructionsPrompt', link);
       });
     });
   });
