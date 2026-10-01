@@ -65,10 +65,14 @@ export type ResolveLinkedInstructions = ((input: {
   recordUse(facts: LinkedInstructionsFacts): void;
 };
 
-/** Minimal cache contract the resolver needs; a Keyv instance already satisfies this shape. */
+/**
+ * Minimal cache contract this module needs — `resolve` reads and writes, and
+ * `invalidateLinkedPrompt` (below) deletes; a Keyv instance already satisfies this shape.
+ */
 export interface LinkedInstructionsCache {
   get(key: string): Promise<unknown>;
   set(key: string, value: unknown, ttl?: number): Promise<unknown>;
+  delete(key: string): Promise<unknown>;
 }
 
 export interface LinkedInstructionsLogger {
@@ -111,6 +115,29 @@ function buildCacheKey(groupId: string, selection: AgentInstructionsPromptSelect
   const selectionKey =
     selection.type === 'production' ? 'production' : `exact:${selection.promptId}`;
   return `native:${groupId}:${selectionKey}`;
+}
+
+/**
+ * Clears a native prompt group's cached linked-instructions entries so a promote or
+ * delete reaches a linked agent on the next request instead of after the cache's TTL.
+ * Always clears the production selection; `promptIds` adds one exact selection per
+ * revision ID the caller passes — a promote clears only production (empty
+ * `promptIds`), a revision delete passes that revision's ID, and a group delete
+ * passes every revision's ID. Keys are built with `buildCacheKey`, the same function
+ * `resolve` uses, so both stay in agreement on the key format.
+ */
+export async function invalidateLinkedPrompt(
+  cache: LinkedInstructionsCache,
+  groupId: string,
+  promptIds: readonly string[],
+): Promise<void> {
+  const selections: AgentInstructionsPromptSelection[] = [
+    { type: 'production' },
+    ...promptIds.map((promptId) => ({ type: 'exact' as const, promptId })),
+  ];
+  await Promise.all(
+    selections.map((selection) => cache.delete(scopedCacheKey(buildCacheKey(groupId, selection)))),
+  );
 }
 
 function isCachedLinkedPrompt(value: unknown): value is CachedLinkedPrompt {

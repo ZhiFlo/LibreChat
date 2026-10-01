@@ -1,9 +1,9 @@
 import type { FiltersConfig, AgentInstructionsPrompt } from 'librechat-data-provider';
 import type { LinkedInstructionsCache, LinkedInstructionsLogger } from './linked';
 import type { PromptService, ResolvedPrompt } from '~/prompts';
+import { createLinkedInstructionsResolver, invalidateLinkedPrompt } from './linked';
 import { ContentTraversalLimitError } from '~/protection/adapters/nested';
 import { assertModelBoundContent } from '~/middleware/modelBoundContent';
-import { createLinkedInstructionsResolver } from './linked';
 
 jest.mock('~/middleware/modelBoundContent', () => ({
   ...jest.requireActual('~/middleware/modelBoundContent'),
@@ -35,6 +35,10 @@ class FakeCache implements LinkedInstructionsCache {
   async set(key: string, value: unknown, ttl?: number): Promise<boolean> {
     this.store.set(key, { value, expiresAt: ttl ? Date.now() + ttl : undefined });
     return true;
+  }
+
+  async delete(key: string): Promise<boolean> {
+    return this.store.delete(key);
   }
 
   get size(): number {
@@ -640,6 +644,62 @@ describe('createLinkedInstructionsResolver', () => {
         '[linkedInstructions] Failed to record prompt group usage',
         expect.objectContaining({ groupId, errorName: 'Error' }),
       );
+    });
+  });
+
+  describe('invalidateLinkedPrompt', () => {
+    it('clears only the production key when no promptIds are given', async () => {
+      const cache = new FakeCache();
+      await cache.set(`native:${groupId}:production`, 'cached');
+      await cache.set(`native:${groupId}:exact:${promptId}`, 'cached');
+
+      await invalidateLinkedPrompt(cache, groupId, []);
+
+      await expect(cache.get(`native:${groupId}:production`)).resolves.toBeUndefined();
+      await expect(cache.get(`native:${groupId}:exact:${promptId}`)).resolves.toBe('cached');
+    });
+
+    it('clears the production key plus one exact key per promptId', async () => {
+      const otherPromptId = '507f1f77bcf86cd799439013';
+      const cache = new FakeCache();
+      await cache.set(`native:${groupId}:production`, 'cached');
+      await cache.set(`native:${groupId}:exact:${promptId}`, 'cached');
+      await cache.set(`native:${groupId}:exact:${otherPromptId}`, 'cached');
+
+      await invalidateLinkedPrompt(cache, groupId, [promptId, otherPromptId]);
+
+      expect(cache.keys()).toEqual([]);
+    });
+
+    it('does not disturb another group sharing the same cache', async () => {
+      const otherGroupId = '507f1f77bcf86cd799439099';
+      const cache = new FakeCache();
+      await cache.set(`native:${groupId}:production`, 'cached');
+      await cache.set(`native:${otherGroupId}:production`, 'cached');
+
+      await invalidateLinkedPrompt(cache, groupId, []);
+
+      await expect(cache.get(`native:${groupId}:production`)).resolves.toBeUndefined();
+      await expect(cache.get(`native:${otherGroupId}:production`)).resolves.toBe('cached');
+    });
+
+    describe('tenant scoping', () => {
+      it('clears only the calling tenant entry when two tenants cached the same group', async () => {
+        const { tenantStorage } = await import('@librechat/data-schemas');
+        const cache = new FakeCache();
+        await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+          cache.set(`native:${groupId}:production:tenant-a`, 'cached'),
+        );
+        await tenantStorage.run({ tenantId: 'tenant-b' }, () =>
+          cache.set(`native:${groupId}:production:tenant-b`, 'cached'),
+        );
+
+        await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+          invalidateLinkedPrompt(cache, groupId, []),
+        );
+
+        expect(cache.keys()).toEqual([`native:${groupId}:production:tenant-b`]);
+      });
     });
   });
 });

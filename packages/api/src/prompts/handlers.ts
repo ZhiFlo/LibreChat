@@ -29,6 +29,13 @@ export interface PromptHandlersDeps {
     resourceType: ResourceType;
     resourceId: string;
   }): Promise<number>;
+  /**
+   * Clears the linked-instructions cache for a native prompt group after a write that
+   * can change what a linked agent reads next: promote, delete a revision, delete a
+   * group. Omitted where no cache is wired. A clear failure is logged and never fails
+   * the write that triggered it.
+   */
+  invalidateLinkedPrompt?(groupId: string, promptIds: readonly string[]): Promise<void>;
 }
 
 export interface PromptHandlers {
@@ -81,6 +88,27 @@ function sendRejection(res: Response, error: PromptServiceError): Response {
       );
   }
   return res.status(400).send({ error: 'Prompt operation is not available' });
+}
+
+/**
+ * Clears the linked-instructions cache so a promote or delete reaches linked agents
+ * on the next request instead of after the cache's TTL. A no-op when no cache is
+ * wired. The write this follows has already succeeded; a clear failure only loses
+ * cache warmth, so it is logged rather than surfaced.
+ */
+async function clearLinkedPromptCache(
+  deps: PromptHandlersDeps,
+  groupId: string,
+  promptIds: readonly string[],
+): Promise<void> {
+  if (!deps.invalidateLinkedPrompt) {
+    return;
+  }
+  try {
+    await deps.invalidateLinkedPrompt(groupId, promptIds);
+  } catch (error) {
+    logger.error('[prompts] Failed to clear the linked-instructions cache', error);
+  }
 }
 
 async function loadAccessContext(deps: PromptHandlersDeps, req: PromptRequest) {
@@ -278,6 +306,9 @@ export function createPromptHandlers(deps: PromptHandlersDeps): PromptHandlers {
         if (!result.ok) {
           return sendRejection(res, result.error);
         }
+        if (result.groupId) {
+          await clearLinkedPromptCache(deps, result.groupId, []);
+        }
         return res.status(200).send(result.value);
       } catch (error) {
         logger.error(error);
@@ -349,10 +380,12 @@ export function createPromptHandlers(deps: PromptHandlersDeps): PromptHandlers {
         if (!groupId || !isValidObjectIdString(groupId)) {
           return res.status(400).send({ error: 'Invalid or missing groupId' });
         }
-        const result = await service.deletePrompt({ groupId, promptId: param(req, 'promptId') });
+        const promptId = param(req, 'promptId');
+        const result = await service.deletePrompt({ groupId, promptId });
         if (!result.ok) {
           return sendRejection(res, result.error);
         }
+        await clearLinkedPromptCache(deps, groupId, [promptId]);
         return res.status(200).send(result.value);
       } catch (error) {
         logger.error(error);
@@ -362,7 +395,15 @@ export function createPromptHandlers(deps: PromptHandlersDeps): PromptHandlers {
 
     async deletePromptGroup(req, res) {
       try {
-        return res.send(await service.deletePromptGroup(param(req, 'groupId')));
+        const groupId = param(req, 'groupId');
+        /* Revisions are gone once the group is deleted, so their IDs are read first —
+         * only when a cache is wired, since otherwise nothing is cleared. */
+        const promptIds = deps.invalidateLinkedPrompt
+          ? (await service.getPrompts({ groupId })).map((revision) => revision._id)
+          : [];
+        const value = await service.deletePromptGroup(groupId);
+        await clearLinkedPromptCache(deps, groupId, promptIds);
+        return res.send(value);
       } catch (error) {
         logger.error('Error deleting prompt group', error);
         return res.status(500).send({ message: 'Error deleting prompt group' });
