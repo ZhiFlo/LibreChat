@@ -82,6 +82,10 @@ jobs:
         if: steps.detect.outputs.should_run == 'true'
         run: npm run static-checks
 
+      - name: Build workspace packages
+        if: steps.detect.outputs.should_run == 'true'
+        run: npm run build:packages
+
       - name: Test client
         if: steps.detect.outputs.should_run == 'true'
         run: npm run test:client
@@ -141,16 +145,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Report failed sync, test, or release
+      - name: Record failed sync, test, or release
         if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          title="LibreChat upstream sync failed: $(date -u +%Y-%m-%d)"
-          body="Automated ZhiFlo LibreChat upstream sync/test/release failed. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. No release should be deployed until this run is fixed."
-          existing="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')"
-          if [ -z "$existing" ]; then
-            gh issue create --title "$title" --body "$body"
-          else
-            gh issue comment "$existing" --body "$body"
-          fi
+          echo "::error title=ZhiFlo LibreChat sync failed::Run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} failed. No image was released or deployed."
