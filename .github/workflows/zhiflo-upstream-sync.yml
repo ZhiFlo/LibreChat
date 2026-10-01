@@ -92,7 +92,9 @@ jobs:
 
       - name: Test API
         if: steps.detect.outputs.should_run == 'true'
-        run: npm run test:api
+        run: |
+          npm run test:api -- --shard=1/2
+          npm run test:api -- --shard=2/2
 
       - name: Build frontend
         if: steps.detect.outputs.should_run == 'true'
