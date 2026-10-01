@@ -61,6 +61,8 @@ export const instructionsPromptErrorKeys: Record<InstructionsPromptErrorCode, Tr
   [InstructionsPromptErrorCode.UNAVAILABLE]: 'com_agents_instructions_prompt_error_unavailable',
   [InstructionsPromptErrorCode.FORBIDDEN]: 'com_agents_instructions_prompt_error_forbidden',
   [InstructionsPromptErrorCode.RESTRICTED]: 'com_agents_instructions_prompt_error_restricted',
+  [InstructionsPromptErrorCode.VALIDATION_FAILED]:
+    'com_agents_instructions_prompt_error_validation_failed',
 };
 
 /** Reads the stable error code an agent-write failure carried, when the server sent one. */

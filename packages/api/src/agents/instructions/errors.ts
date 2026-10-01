@@ -8,11 +8,26 @@ const INSTRUCTIONS_PROMPT_ERROR_MESSAGES: Record<InstructionsPromptErrorCode, st
   [InstructionsPromptErrorCode.FORBIDDEN]: 'You do not have access to the selected prompt.',
   [InstructionsPromptErrorCode.RESTRICTED]:
     'You do not have access to the currently linked prompt.',
+  [InstructionsPromptErrorCode.VALIDATION_FAILED]: 'Unable to validate the linked prompt',
 };
 
 export interface InstructionsPromptLinkErrorResponse {
-  readonly status: 400 | 403;
+  readonly status: 400 | 403 | 500;
   readonly body: { readonly error: string; readonly code: InstructionsPromptErrorCode };
+}
+
+/**
+ * Builds the HTTP-shaped `{ status, body }` response for a stable `instructionsPrompt`
+ * error code, pairing it with its one approved, user-safe message. Shared by every
+ * caller that maps a stable code to a response, so the same code always carries the
+ * same copy: the per-operation rejection below, and `checkInstructionsPromptWrite`'s
+ * own `'duplicate'` (FORBIDDEN) and unexpected-failure (VALIDATION_FAILED) cases.
+ */
+export function buildInstructionsPromptError(
+  status: InstructionsPromptLinkErrorResponse['status'],
+  code: InstructionsPromptErrorCode,
+): InstructionsPromptLinkErrorResponse {
+  return { status, body: { error: INSTRUCTIONS_PROMPT_ERROR_MESSAGES[code], code } };
 }
 
 /**
@@ -47,11 +62,5 @@ export async function getInstructionsPromptLinkError({
   if (result.ok) {
     return null;
   }
-  return {
-    status: result.status,
-    body: {
-      error: INSTRUCTIONS_PROMPT_ERROR_MESSAGES[result.code],
-      code: result.code,
-    },
-  };
+  return buildInstructionsPromptError(result.status, result.code);
 }

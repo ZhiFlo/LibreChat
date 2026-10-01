@@ -126,6 +126,9 @@ describe('getInstructionsPromptErrorCode', () => {
     expect(getInstructionsPromptErrorCode(axiosError(400, 'instructions_prompt_unavailable'))).toBe(
       'instructions_prompt_unavailable',
     );
+    expect(
+      getInstructionsPromptErrorCode(axiosError(500, 'instructions_prompt_validation_failed')),
+    ).toBe('instructions_prompt_validation_failed');
   });
 
   it('returns undefined for an unrecognized code', () => {

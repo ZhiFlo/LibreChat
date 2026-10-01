@@ -63,6 +63,13 @@ export type AgentWithVersionsCarrier = AgentInstructionsPromptCarrier & {
 export interface InstructionsPromptAccess {
   /** PROMPTGROUP `VIEW` bit test for `groupId` against the given identity. */
   canViewGroup(input: { userId: string; role: string; groupId: string }): Promise<boolean>;
+  /** Role-level PROMPTS `USE` gate (the `canUsePrompts` dependency injected into
+   *  `createInstructionsPromptAccess`), exposed so a caller can run this one check in
+   *  isolation. `checkInstructionsPromptWrite`'s `'duplicate'` operation is the one
+   *  write path that needs this: a duplicate copies the source agent's link verbatim,
+   *  with no ACL VIEW or resolvability check, but still requires the duplicator's own
+   *  role to grant PROMPTS USE before it may own a newly linked agent. */
+  canUsePrompts(user: InstructionsPromptAccessUser): Promise<boolean>;
   /**
    * Validates a create/update/revert write of `instructionsPrompt` against the stored
    * link. `next === undefined` means the field is absent from the payload (no change
@@ -167,11 +174,14 @@ function collectLinkGroupIds(
  * Builds the permission checks that gate reading and writing an agent's linked
  * instructions prompt. Callers (the `/api` write and read handlers) own the HTTP
  * boundary; this module only decides ok/forbidden/restricted/unavailable.
- * `validateLinkWrite` throws on an unexpected permission or prompt-service
- * failure rather than swallowing it — that check runs before the write lands,
- * so a 500 there is safe. `presentForEditor` and `presentVersionsForEditor`
- * run after the write has already been persisted and fail closed instead: see
- * their own docs below.
+ * `validateLinkWrite` (and `canUsePrompts`, called directly for the `'duplicate'`
+ * operation) throw on an unexpected permission or prompt-service failure rather than
+ * swallowing it — that check runs before the write lands, so failing it is safe. The
+ * caller, `checkInstructionsPromptWrite` (`./writes`), is the one that turns such a
+ * throw into a sanitized `500` rather than letting a raw `error.message` reach the
+ * client; this module's job stops at ok/forbidden/restricted/unavailable or throwing.
+ * `presentForEditor` and `presentVersionsForEditor` run after the write has already
+ * been persisted and fail closed instead: see their own docs below.
  */
 export function createInstructionsPromptAccess(deps: {
   getResourcePermissionsMap: GetResourcePermissionsMap;
@@ -439,5 +449,11 @@ export function createInstructionsPromptAccess(deps: {
     return versions.map((version) => redactIfHidden(version, redact));
   }
 
-  return { canViewGroup, validateLinkWrite, presentForEditor, presentVersionsForEditor };
+  return {
+    canViewGroup,
+    canUsePrompts,
+    validateLinkWrite,
+    presentForEditor,
+    presentVersionsForEditor,
+  };
 }

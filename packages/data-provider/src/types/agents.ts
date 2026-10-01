@@ -1025,6 +1025,9 @@ export const InstructionsPromptErrorCode = {
   FORBIDDEN: 'instructions_prompt_forbidden',
   /** The editor tries to change, remove, or re-select an existing link they cannot VIEW. */
   RESTRICTED: 'instructions_prompt_restricted',
+  /** The role, ACL, or prompt-store lookup backing the write check failed unexpectedly
+   *  (not a content-policy rejection). No detail about the failure is disclosed. */
+  VALIDATION_FAILED: 'instructions_prompt_validation_failed',
 } as const;
 
 export type InstructionsPromptErrorCode =

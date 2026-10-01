@@ -5829,6 +5829,35 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           expect(persisted.instructions).toBeUndefined();
         });
 
+        test('allows a safe partial edit of an unlinked agent even when its stored instructions would fail content policy (regression guard)', async () => {
+          // An agent that was never linked has no `previous` link to remove, so an
+          // unrelated edit must scan only what the payload sends — never fall back
+          // to stored `instructions` the write doesn't touch. Mirrors
+          // e2e/specs/mock/content-filters.persisted.spec.ts's "safe partial edits
+          // work" scenario.
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Unlinked Agent With Stored Blocked Text',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructions: blockedInstructions,
+          });
+
+          mockReq.config = { filters: blockedFilters };
+          mockReq.params = { id: agent.id };
+          mockReq.body = { name: 'Renamed Unlinked Agent' };
+
+          await updateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).not.toHaveBeenCalledWith(400);
+          expect(mockRes.status).not.toHaveBeenCalledWith(403);
+          const persisted = await Agent.findOne({ id: agent.id }).lean();
+          expect(persisted.name).toBe('Renamed Unlinked Agent');
+          expect(persisted.instructions).toBe(blockedInstructions);
+        });
+
         test('rejects removing a link over stored disallowed inline text the update never resends', async () => {
           const { groupId } = await createPromptGroupFixture('Removal Scan Blocked Group');
           mockGroupVisibility(new Set([groupId]));
@@ -6138,6 +6167,106 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
           expect(mockRes.status).toHaveBeenCalledWith(400);
           expect(await Agent.countDocuments({})).toBe(1);
+        });
+      });
+
+      describe('link gate (PROMPTS USE)', () => {
+        /** `getRoleByName` auto-creates a missing system role from defaults (which
+         *  grant PROMPTS USE), so a role document must already exist to override it.
+         *  Reset after each test so later tests see the auto-created default again. */
+        const setPromptsUse = (allowed) =>
+          mongoose.models.Role.findOneAndUpdate(
+            { name: 'USER' },
+            {
+              $set: {
+                name: 'USER',
+                [`permissions.${PermissionTypes.PROMPTS}.${Permissions.USE}`]: allowed,
+              },
+            },
+            { upsert: true },
+          );
+
+        afterEach(async () => {
+          await mongoose.models.Role.deleteMany({ name: 'USER' });
+        });
+
+        test('returns 403 instructions_prompt_forbidden and creates nothing when the duplicator lacks PROMPTS USE', async () => {
+          const { groupId } = await createPromptGroupFixture('Duplicate Gate Group');
+          const instructionsPrompt = {
+            source: 'native',
+            groupId,
+            selection: { type: 'production' },
+          };
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Source Agent For Gated Duplicate',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructionsPrompt,
+          });
+          await setPromptsUse(false);
+
+          mockReq.params = { id: agent.id };
+
+          await duplicateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).toHaveBeenCalledWith(403);
+          expect(mockRes.json).toHaveBeenCalledWith({
+            error: expect.any(String),
+            code: InstructionsPromptErrorCode.FORBIDDEN,
+          });
+          // Only the source agent exists: no duplicate, and no cloned actions.
+          expect(await Agent.countDocuments({})).toBe(1);
+        });
+
+        test('still allows duplicating an unlinked agent without PROMPTS USE', async () => {
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Unlinked Source For Gated Duplicate',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+          });
+          await setPromptsUse(false);
+
+          mockReq.params = { id: agent.id };
+
+          await duplicateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).toHaveBeenCalledWith(201);
+          expect(await Agent.countDocuments({})).toBe(2);
+        });
+
+        test('still presents a restricted stub (201) when the duplicator has USE but not VIEW on the group', async () => {
+          const { groupId } = await createPromptGroupFixture('Duplicate Gate Use Only Group');
+          const instructionsPrompt = {
+            source: 'native',
+            groupId,
+            selection: { type: 'production' },
+          };
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Source Agent For Use-Only Duplicate',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructionsPrompt,
+          });
+          // Default role grants PROMPTS USE; no VIEW grant for `groupId`.
+
+          mockReq.params = { id: agent.id };
+
+          await duplicateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).toHaveBeenCalledWith(201);
+          const response = mockRes.json.mock.calls[0][0];
+          expect(response.agent.instructionsPrompt).toEqual({ source: 'native', restricted: true });
+          const persisted = await Agent.findOne({ id: response.agent.id }).lean();
+          expect(persisted.instructionsPrompt).toEqual(instructionsPrompt);
         });
       });
     });
@@ -6811,6 +6940,157 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         const persisted = await Agent.findOne({ id: agent.id }).lean();
         expect(persisted.name).toBe('Renamed Without Prompts Permission');
         expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+      });
+    });
+
+    describe('unexpected validation failures (500)', () => {
+      /** Every case below forces a dependency `checkInstructionsPromptWrite` calls
+       *  (the ACL lookup, or — for duplicate — the role lookup) to throw, and
+       *  asserts the handler sends only the fixed, safe body: never the thrown
+       *  message, and nothing is created or persisted. */
+      const outageMessage = 'outage detail that must never reach the client';
+
+      test('createAgentHandler returns the fixed 500 when the ACL lookup throws and creates nothing', async () => {
+        const groupId = new mongoose.Types.ObjectId().toString();
+        getResourcePermissionsMap.mockImplementation(async () => {
+          throw new Error(outageMessage);
+        });
+
+        mockReq.body = {
+          name: 'Validation Failure Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+        };
+
+        await createAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(500);
+        expect(mockRes.json).toHaveBeenCalledWith({
+          error: 'Unable to validate the linked prompt',
+          code: InstructionsPromptErrorCode.VALIDATION_FAILED,
+        });
+        expect(mockRes.json).not.toHaveBeenCalledWith(
+          expect.objectContaining({ error: expect.stringContaining(outageMessage) }),
+        );
+        expect(await Agent.countDocuments({})).toBe(0);
+      });
+
+      test('updateAgentHandler returns the fixed 500 when the ACL lookup throws and persists nothing', async () => {
+        const { groupId: currentGroupId } = await createPromptGroupFixture(
+          'Validation Failure Current Group',
+        );
+        const { groupId: nextGroupId } = await createPromptGroupFixture(
+          'Validation Failure Next Group',
+        );
+        mockGroupVisibility(new Set([currentGroupId, nextGroupId]));
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Agent Pending Validation Failure',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: {
+            source: 'native',
+            groupId: currentGroupId,
+            selection: { type: 'production' },
+          },
+        });
+
+        getResourcePermissionsMap.mockImplementation(async () => {
+          throw new Error(outageMessage);
+        });
+
+        mockReq.params = { id: agent.id };
+        mockReq.body = {
+          instructionsPrompt: {
+            source: 'native',
+            groupId: nextGroupId,
+            selection: { type: 'production' },
+          },
+        };
+
+        await updateAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(500);
+        expect(mockRes.json).toHaveBeenCalledWith({
+          error: 'Unable to validate the linked prompt',
+          code: InstructionsPromptErrorCode.VALIDATION_FAILED,
+        });
+        expect(mockRes.json).not.toHaveBeenCalledWith(
+          expect.objectContaining({ error: expect.stringContaining(outageMessage) }),
+        );
+        const persisted = await Agent.findOne({ id: agent.id }).lean();
+        expect(persisted.instructionsPrompt.groupId).toBe(currentGroupId);
+      });
+
+      test('revertAgentVersionHandler returns the fixed 500 when the ACL lookup throws and does not revert', async () => {
+        const { groupId } = await createPromptGroupFixture('Validation Failure Revert Group');
+        const agentId = `agent_${nanoid()}`;
+        await Agent.create({
+          id: agentId,
+          author: mockReq.user.id,
+          name: 'Current Prompt-Linked Agent For Validation Failure',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+          versions: [{ name: 'Pre-Link Agent', provider: 'openai', model: 'gpt-4', tools: [] }],
+        });
+
+        getResourcePermissionsMap.mockImplementation(async () => {
+          throw new Error(outageMessage);
+        });
+
+        mockReq.params = { id: agentId };
+        mockReq.body = { version_index: 0 };
+
+        await revertAgentVersionHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(500);
+        expect(mockRes.json).toHaveBeenCalledWith({
+          error: 'Unable to validate the linked prompt',
+          code: InstructionsPromptErrorCode.VALIDATION_FAILED,
+        });
+        expect(mockRes.json).not.toHaveBeenCalledWith(
+          expect.objectContaining({ error: expect.stringContaining(outageMessage) }),
+        );
+        const persisted = await Agent.findOne({ id: agentId }).lean();
+        expect(persisted.name).toBe('Current Prompt-Linked Agent For Validation Failure');
+        expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+      });
+
+      test('duplicateAgentHandler returns the fixed 500 when the role lookup throws and creates nothing', async () => {
+        const { groupId } = await createPromptGroupFixture('Validation Failure Duplicate Group');
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Source Agent For Validation Failure',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+        });
+
+        // Duplicate's gate checks only the role (PROMPTS USE), never the ACL —
+        // so the role lookup itself must throw to exercise this path.
+        jest.spyOn(db, 'getRoleByName').mockRejectedValueOnce(new Error(outageMessage));
+
+        mockReq.params = { id: agent.id };
+
+        await duplicateAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(500);
+        expect(mockRes.json).toHaveBeenCalledWith({
+          error: 'Unable to validate the linked prompt',
+          code: InstructionsPromptErrorCode.VALIDATION_FAILED,
+        });
+        expect(mockRes.json).not.toHaveBeenCalledWith(
+          expect.objectContaining({ error: expect.stringContaining(outageMessage) }),
+        );
+        // Only the source agent exists: the gate ran before any clone/action/agent write.
+        expect(await Agent.countDocuments({})).toBe(1);
       });
     });
   });

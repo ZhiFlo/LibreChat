@@ -864,11 +864,15 @@ const createAgentHandler = async (req, res) => {
     }
 
     // Dead once linked (see `initializeAgent`), so it can't block a switch to a safe link.
+    // A create has no stored link, so there is never a removal to fall back for.
     if (
       await blockFilteredAgentContent(
         req,
         res,
-        excludeInstructionsWhenLinked(agentData, agentData.instructionsPrompt),
+        excludeInstructionsWhenLinked(agentData, {
+          previous: undefined,
+          effective: agentData.instructionsPrompt,
+        }),
       )
     ) {
       return;
@@ -925,6 +929,7 @@ const createAgentHandler = async (req, res) => {
       previous: undefined,
       next: agentData.instructionsPrompt,
       filters: req.config?.filters,
+      logger,
     });
     if (instructionsPromptError) {
       return res.status(instructionsPromptError.status).json(instructionsPromptError.body);
@@ -1319,6 +1324,7 @@ const updateAgentHandler = async (req, res) => {
       previous: existingAgent.instructionsPrompt,
       next: instructionsPromptField,
       filters: req.config?.filters,
+      logger,
     });
     if (instructionsPromptError) {
       return res.status(instructionsPromptError.status).json(instructionsPromptError.body);
@@ -1343,8 +1349,11 @@ const updateAgentHandler = async (req, res) => {
     }
 
     // Dead once linked (see `initializeAgent`), so it can't block a switch to a safe link.
-    // Live again once the link is removed — fall back to the stored `instructions`
-    // (never scanned while the link stayed valid) when the payload doesn't send its own.
+    // Live again once a *previously valid* link is removed — fall back to the stored
+    // `instructions` (never scanned while that link stayed valid) when the payload
+    // doesn't send its own. An ordinary unlinked agent has no such link to remove, so
+    // an unrelated partial edit never falls back to (and never gets rejected over)
+    // stored text this write doesn't touch.
     const effectiveInstructionsLink = effectiveInstructionsPromptLink(
       instructionsPromptField,
       existingAgent.instructionsPrompt,
@@ -1353,11 +1362,11 @@ const updateAgentHandler = async (req, res) => {
       await blockFilteredAgentContent(
         req,
         res,
-        excludeInstructionsWhenLinked(
-          updateData,
-          effectiveInstructionsLink,
-          existingAgent.instructions,
-        ),
+        excludeInstructionsWhenLinked(updateData, {
+          previous: existingAgent.instructionsPrompt,
+          effective: effectiveInstructionsLink,
+          fallbackInstructions: existingAgent.instructions,
+        }),
       )
     ) {
       return;
@@ -1531,6 +1540,24 @@ const duplicateAgentHandler = async (req, res) => {
       });
     }
 
+    // Gates the link copy itself, before any side effect (action cloning, agent
+    // creation): the duplicate carries the source's link verbatim with no ACL VIEW
+    // or resolvability check, but the duplicator's own role must still grant PROMPTS
+    // USE before they may own a newly linked agent.
+    const duplicateInstructionsPromptError = await checkInstructionsPromptWrite({
+      access: instructionsPromptAccess,
+      operation: 'duplicate',
+      user: { id: userId, role: userRole },
+      previous: undefined,
+      next: agent.instructionsPrompt,
+      logger,
+    });
+    if (duplicateInstructionsPromptError) {
+      return res
+        .status(duplicateInstructionsPromptError.status)
+        .json(duplicateInstructionsPromptError.body);
+    }
+
     const {
       id: _id,
       _id: __id,
@@ -1692,12 +1719,16 @@ const duplicateAgentHandler = async (req, res) => {
     }
 
     // Dead once linked (see `initializeAgent`), so it can't block a duplicate that copies
-    // the source's link verbatim — no removal happens here, so no fallback is needed.
+    // the source's link verbatim — no removal happens here (no stored `previous`), so
+    // no fallback is needed.
     if (
       (await blockFilteredAgentContent(
         req,
         res,
-        excludeInstructionsWhenLinked(newAgentData, newAgentData.instructionsPrompt),
+        excludeInstructionsWhenLinked(newAgentData, {
+          previous: undefined,
+          effective: newAgentData.instructionsPrompt,
+        }),
       )) ||
       blockFilteredActionContent(req, res, sanitizedActions)
     ) {
@@ -2245,6 +2276,7 @@ const revertAgentVersionHandler = async (req, res) => {
       previous: existingAgent.instructionsPrompt ?? null,
       next: revertInstructionsPromptLink,
       filters: req.config?.filters,
+      logger,
     });
     if (revertInstructionsPromptError) {
       return res
@@ -2263,11 +2295,16 @@ const revertAgentVersionHandler = async (req, res) => {
         : [];
 
     // Dead once linked (see `initializeAgent`), so it can't block a switch to a safe link.
+    // No fallback is passed: `revertVersion.instructions` is already the snapshot's own
+    // field on `data`, so the base behavior (scan what's present) already covers it.
     if (
       (await blockFilteredAgentContent(
         req,
         res,
-        excludeInstructionsWhenLinked(revertVersion, revertInstructionsPromptLink),
+        excludeInstructionsWhenLinked(revertVersion, {
+          previous: existingAgent.instructionsPrompt ?? null,
+          effective: revertInstructionsPromptLink,
+        }),
       )) ||
       blockFilteredActionContent(req, res, actions)
     ) {
