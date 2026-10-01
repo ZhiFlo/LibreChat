@@ -299,6 +299,56 @@ describe('VersionPanel', () => {
     );
   });
 
+  test('shows the restore control for every version when its linked prompt is a restricted stub', () => {
+    const restrictedStub = { source: 'native', restricted: true };
+    const baseVersion = {
+      name: mockAgentData.name,
+      description: mockAgentData.description,
+      instructions: mockAgentData.instructions,
+      tools: mockAgentData.tools,
+      capabilities: mockAgentData.capabilities,
+      edges: mockAgentData.edges,
+    };
+
+    mockUseGetExpandedAgentByIdQuery.mockReturnValueOnce({
+      data: { ...mockAgentData, instructionsPrompt: { ...restrictedStub } },
+      isLoading: false,
+      error: null,
+      refetch: jest.fn(),
+    });
+    mockUseGetAgentVersionsQuery.mockReturnValueOnce({
+      data: [
+        {
+          ...baseVersion,
+          instructionsPrompt: { ...restrictedStub },
+          updatedAt: '2023-01-02T00:00:00Z',
+        },
+        {
+          ...baseVersion,
+          instructionsPrompt: { ...restrictedStub },
+          updatedAt: '2023-01-01T00:00:00Z',
+        },
+      ],
+      isLoading: false,
+      error: null,
+      refetch: jest.fn(),
+    });
+
+    render(<VersionPanel />);
+    expect(VersionContent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        versionContext: expect.objectContaining({
+          activeVersion: null,
+          versionIds: [
+            expect.objectContaining({ isActive: false }),
+            expect.objectContaining({ isActive: false }),
+          ],
+        }),
+      }),
+      expect.anything(),
+    );
+  });
+
   test('treats versions with identical linked prompts as active', () => {
     const link = {
       source: 'native',

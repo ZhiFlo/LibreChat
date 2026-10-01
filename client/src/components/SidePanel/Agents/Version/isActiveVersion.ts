@@ -5,18 +5,27 @@ import type {
   RestrictedAgentInstructionsPrompt,
 } from 'librechat-data-provider';
 import type { AgentState, VersionRecord } from './types';
+import { isRestrictedInstructionsPrompt } from '../instructionsPromptUtils';
 
 const edgesMatch = (versionEdges?: GraphEdge[], currentEdges?: GraphEdge[]): boolean =>
   isEqual(versionEdges ?? [], currentEdges ?? []);
 
-/** Deep-compares the linked-prompt field: source, `groupId`, and `selection`. A
- * restricted stub (no `groupId`, no `selection`) only ever matches another
- * restricted stub, never a real link or no link, because its shape already
- * excludes those fields — plain structural equality is enough. */
+/** Compares the linked-prompt field: source, `groupId`, and `selection`. A restricted
+ * stub hides the linked group from this editor, so the client cannot tell whether it
+ * matches the other side's link — treat it as never matching, on either side, rather
+ * than deep-comparing the stub's shape. Two visible links still compare by value. */
 const instructionsPromptMatch = (
   versionPrompt?: AgentInstructionsPrompt | RestrictedAgentInstructionsPrompt | null,
   currentPrompt?: AgentInstructionsPrompt | RestrictedAgentInstructionsPrompt | null,
-): boolean => isEqual(versionPrompt ?? null, currentPrompt ?? null);
+): boolean => {
+  if (
+    isRestrictedInstructionsPrompt(versionPrompt) ||
+    isRestrictedInstructionsPrompt(currentPrompt)
+  ) {
+    return false;
+  }
+  return isEqual(versionPrompt ?? null, currentPrompt ?? null);
+};
 
 export const isActiveVersion = (
   version: VersionRecord,

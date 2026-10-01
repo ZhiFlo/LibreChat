@@ -273,4 +273,59 @@ describe('isActiveVersion', () => {
       expect(isActiveVersion(version, currentAgent, versions)).toBe(true);
     });
   });
+
+  describe('restricted instructions-prompt links', () => {
+    const restrictedStub = { source: 'native', restricted: true };
+    const visibleLink = {
+      source: 'native',
+      groupId: 'group-a',
+      selection: { type: 'production' },
+    };
+
+    test('versions that differ only by hidden links do not match', () => {
+      const version = createVersion({
+        instructionsPrompt: { ...restrictedStub },
+      });
+      const currentAgent = createAgentState({
+        instructionsPrompt: { ...restrictedStub },
+      });
+      const versions = [version];
+
+      expect(isActiveVersion(version, currentAgent, versions)).toBe(false);
+    });
+
+    test('a restricted stub on only the version side is not active', () => {
+      const version = createVersion({ instructionsPrompt: { ...restrictedStub } });
+      const currentAgent = createAgentState({ instructionsPrompt: { ...visibleLink } });
+      const versions = [version];
+
+      expect(isActiveVersion(version, currentAgent, versions)).toBe(false);
+    });
+
+    test('a restricted stub on only the current-agent side is not active', () => {
+      const version = createVersion({ instructionsPrompt: { ...visibleLink } });
+      const currentAgent = createAgentState({ instructionsPrompt: { ...restrictedStub } });
+      const versions = [version];
+
+      expect(isActiveVersion(version, currentAgent, versions)).toBe(false);
+    });
+
+    test('visible, equal links still match', () => {
+      const version = createVersion({ instructionsPrompt: { ...visibleLink } });
+      const currentAgent = createAgentState({ instructionsPrompt: { ...visibleLink } });
+      const versions = [version];
+
+      expect(isActiveVersion(version, currentAgent, versions)).toBe(true);
+    });
+
+    test('visible links with different groups do not match', () => {
+      const version = createVersion({ instructionsPrompt: { ...visibleLink } });
+      const currentAgent = createAgentState({
+        instructionsPrompt: { ...visibleLink, groupId: 'group-b' },
+      });
+      const versions = [version];
+
+      expect(isActiveVersion(version, currentAgent, versions)).toBe(false);
+    });
+  });
 });
