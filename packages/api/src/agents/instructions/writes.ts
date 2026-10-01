@@ -16,7 +16,7 @@ import { isContentFilterError } from '~/middleware/contentFilter';
 import { isValidInstructionsPromptLink } from './linked';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
-export type InstructionsPromptWriteOperation = 'create' | 'update' | 'revert' | 'duplicate';
+export type InstructionsPromptWriteOperation = 'create' | 'update';
 
 /**
  * Returned whenever the role, ACL, or prompt-store lookup backing a write check throws
@@ -31,32 +31,29 @@ const VALIDATION_FAILED_ERROR = buildInstructionsPromptError(
 );
 
 /**
- * Validates one create/update/revert/duplicate write of `instructionsPrompt`, owning
- * every branch the write handler would otherwise carry: whether the field changed at
- * all (`next === undefined` short-circuits before any permission or prompt lookup),
- * and whether the operation requires the selection to still resolve (every operation
- * except `revert` — a stale snapshot continues the turn without instructions rather
- * than failing the write). Returns `null` when the write may proceed; the caller only
- * needs to map a non-null result to its HTTP response.
+ * Validates one create or update write of `instructionsPrompt`, owning every branch
+ * the write handler would otherwise carry: whether the field changed at all
+ * (`next === undefined` short-circuits before any permission or prompt lookup) and
+ * the permission/resolvability checks in `access.validateLinkWrite`. Returns `null`
+ * when the write may proceed; the caller only needs to map a non-null result to its
+ * HTTP response.
  *
- * `'duplicate'` takes a narrower path than the rest: a duplicate copies the source
- * agent's link verbatim (an editor who can duplicate can already run the original,
- * which uses the same link), so this never checks PROMPTGROUP VIEW on `next` or
- * whether it still resolves. It only requires the duplicator's own role to grant
- * PROMPTS USE — `access.canUsePrompts` — before they may own a newly linked agent,
- * and only when a link is actually being copied (`next != null`).
+ * Covers `'create'` and `'update'` only. A duplicate or revert carries its source
+ * link (the duplicated agent's, or a version snapshot's) as-is and never calls this
+ * function; Agent EDIT is the only authority either needs.
  *
  * Every branch runs inside one try/catch: an unexpected throw from the role, ACL, or
- * prompt-store lookups behind either path is logged here with `getSafeErrorMetadata`
- * and mapped to `VALIDATION_FAILED_ERROR` instead of reaching the caller, where it
- * would otherwise surface as a raw `error.message` on the handler's catch-all. A
- * recognized content-policy error is rethrown unchanged — `validateLinkWrite` already
- * maps that case to its own `ok: false` result, so one reaching here would be an
- * unrecognized caller bug, not a failure this function should mask.
+ * prompt-store lookups behind `validateLinkWrite` is logged here with
+ * `getSafeErrorMetadata` and mapped to `VALIDATION_FAILED_ERROR` instead of reaching
+ * the caller, where it would otherwise surface as a raw `error.message` on the
+ * handler's catch-all. A recognized content-policy error is rethrown unchanged —
+ * `validateLinkWrite` already maps that case to its own `ok: false` result, so one
+ * reaching here would be an unrecognized caller bug, not a failure this function
+ * should mask.
  */
 export async function checkInstructionsPromptWrite({
   access,
-  operation,
+  operation: _operation,
   user,
   previous,
   next,
@@ -64,37 +61,27 @@ export async function checkInstructionsPromptWrite({
   logger,
   req,
 }: {
-  access: Pick<InstructionsPromptAccess, 'validateLinkWrite' | 'canUsePrompts'>;
+  access: Pick<InstructionsPromptAccess, 'validateLinkWrite'>;
   operation: InstructionsPromptWriteOperation;
   user: InstructionsPromptAccessUser;
   previous: AgentInstructionsPrompt | null | undefined;
   next: AgentInstructionsPrompt | null | undefined;
   filters?: FiltersConfig;
   logger: InstructionsPromptAccessLogger;
-  /** Forwarded unexamined to `access.canUsePrompts`/`validateLinkWrite` so the role
-   *  lookup behind them can reuse the caller's per-request role cache. */
+  /** Forwarded unexamined to `access.validateLinkWrite` so its role lookup can reuse
+   *  the caller's per-request role cache. */
   req?: InstructionsPromptAccessRequest;
 }): Promise<InstructionsPromptLinkErrorResponse | null> {
   if (next === undefined) {
     return null;
   }
   try {
-    if (operation === 'duplicate') {
-      if (next == null) {
-        return null;
-      }
-      const allowed = await access.canUsePrompts(user, req);
-      return allowed
-        ? null
-        : buildInstructionsPromptError(403, InstructionsPromptErrorCode.FORBIDDEN);
-    }
     return await getInstructionsPromptLinkError({
       access,
       user,
       previous: previous ?? null,
       next,
       filters,
-      requireResolvable: operation !== 'revert',
       req,
     });
   } catch (error) {

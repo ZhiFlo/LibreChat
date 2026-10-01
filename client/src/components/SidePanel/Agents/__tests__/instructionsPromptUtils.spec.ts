@@ -120,9 +120,6 @@ describe('getInstructionsPromptErrorCode', () => {
     expect(getInstructionsPromptErrorCode(axiosError(403, 'instructions_prompt_forbidden'))).toBe(
       'instructions_prompt_forbidden',
     );
-    expect(getInstructionsPromptErrorCode(axiosError(403, 'instructions_prompt_restricted'))).toBe(
-      'instructions_prompt_restricted',
-    );
     expect(getInstructionsPromptErrorCode(axiosError(400, 'instructions_prompt_unavailable'))).toBe(
       'instructions_prompt_unavailable',
     );

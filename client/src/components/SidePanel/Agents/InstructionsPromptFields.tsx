@@ -153,6 +153,11 @@ export default function InstructionsPromptFields() {
         /** A link that survived loading but matches no listed group: the group was
          *  deleted, or the editor's share access to it was revoked. */
         const linkedGroupMissing = groupId !== '' && !groupsFailed && selectedGroup == null;
+        /** The stub carries no `groupId`, so the dropdown's current value comes from
+         *  this label, never from a group name: nothing here reads identity off it. */
+        const groupDisplayValue = isRestrictedInstructionsPrompt(field.value)
+          ? localize('com_agents_instructions_prompt_restricted_title')
+          : (selectedGroup?.name ?? '');
 
         const handleGroupChange = (nextGroupId: string) => {
           if (nextGroupId === '') {
@@ -191,7 +196,7 @@ export default function InstructionsPromptFields() {
             <ControlCombobox
               selectId="instructions-prompt-group"
               selectedValue={groupId}
-              displayValue={selectedGroup?.name ?? ''}
+              displayValue={groupDisplayValue}
               selectPlaceholder={localize('com_agents_instructions_prompt_select_placeholder')}
               searchPlaceholder={localize('com_agents_instructions_prompt_search_placeholder')}
               setValue={handleGroupChange}

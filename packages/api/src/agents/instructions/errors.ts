@@ -10,8 +10,6 @@ import type {
 const INSTRUCTIONS_PROMPT_ERROR_MESSAGES: Record<InstructionsPromptErrorCode, string> = {
   [InstructionsPromptErrorCode.UNAVAILABLE]: 'The selected prompt is not available.',
   [InstructionsPromptErrorCode.FORBIDDEN]: 'You do not have access to the selected prompt.',
-  [InstructionsPromptErrorCode.RESTRICTED]:
-    'You do not have access to the currently linked prompt.',
   [InstructionsPromptErrorCode.VALIDATION_FAILED]: 'Unable to validate the linked prompt',
 };
 
@@ -25,7 +23,7 @@ export interface InstructionsPromptLinkErrorResponse {
  * error code, pairing it with its one approved, user-safe message. Shared by every
  * caller that maps a stable code to a response, so the same code always carries the
  * same copy: the per-operation rejection below, and `checkInstructionsPromptWrite`'s
- * own `'duplicate'` (FORBIDDEN) and unexpected-failure (VALIDATION_FAILED) cases.
+ * own unexpected-failure (VALIDATION_FAILED) case.
  */
 export function buildInstructionsPromptError(
   status: InstructionsPromptLinkErrorResponse['status'],
@@ -35,11 +33,11 @@ export function buildInstructionsPromptError(
 }
 
 /**
- * Validates a create/update/revert write of `instructionsPrompt` against the agent's
- * stored link, before any write lands, and maps a rejection to the HTTP boundary's
+ * Validates a create/update write of `instructionsPrompt` against the agent's stored
+ * link, before any write lands, and maps a rejection to the HTTP boundary's
  * `{ status, body }` shape. Returns `null` when the write may proceed. The caller
- * (`/api`) owns only the HTTP call; every ok/forbidden/restricted/unavailable decision
- * lives in `access.validateLinkWrite`.
+ * (`/api`) owns only the HTTP call; every ok/forbidden/unavailable decision lives in
+ * `access.validateLinkWrite`.
  */
 export async function getInstructionsPromptLinkError({
   access,
@@ -47,7 +45,6 @@ export async function getInstructionsPromptLinkError({
   previous,
   next,
   filters,
-  requireResolvable,
   req,
 }: {
   access: Pick<InstructionsPromptAccess, 'validateLinkWrite'>;
@@ -55,7 +52,6 @@ export async function getInstructionsPromptLinkError({
   previous: AgentInstructionsPrompt | null | undefined;
   next: AgentInstructionsPrompt | null | undefined;
   filters?: FiltersConfig;
-  requireResolvable: boolean;
   /** Forwarded unexamined to `validateLinkWrite` so its role lookup can reuse the
    *  caller's per-request role cache. */
   req?: InstructionsPromptAccessRequest;
@@ -65,7 +61,6 @@ export async function getInstructionsPromptLinkError({
     previous,
     next,
     filters,
-    requireResolvable,
     req,
   });
   if (result.ok) {

@@ -706,4 +706,12 @@ describe('computeInstructionsPromptChanged', () => {
   it('is changed when an editor with access replaces a restricted stub with a real link', () => {
     expect(computeInstructionsPromptChanged('prompt', link, stub)).toBe(true);
   });
+
+  it('is changed when a restricted stub is switched to Inline, so the removal is sent', () => {
+    /** Both sides resolve to `null` here (inline mode and the stub both do), so a diff
+     *  of resolved values alone can't tell this apart from "still the stub, unchanged"
+     *  above — the stub-aware branch has to settle it directly. */
+    expect(computeInstructionsPromptChanged('inline', null, stub)).toBe(true);
+    expect(computeInstructionsPromptChanged('inline', stub, stub)).toBe(true);
+  });
 });

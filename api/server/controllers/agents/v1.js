@@ -1518,25 +1518,8 @@ const duplicateAgentHandler = async (req, res) => {
       });
     }
 
-    // Gates the link copy itself, before any side effect (action cloning, agent
-    // creation): the duplicate carries the source's link verbatim with no ACL VIEW
-    // or resolvability check, but the duplicator's own role must still grant PROMPTS
-    // USE before they may own a newly linked agent.
-    const duplicateInstructionsPromptError = await checkInstructionsPromptWrite({
-      access: instructionsPromptAccess,
-      operation: 'duplicate',
-      user: { id: userId, role: userRole },
-      previous: undefined,
-      next: agent.instructionsPrompt,
-      logger,
-      req,
-    });
-    if (duplicateInstructionsPromptError) {
-      return res
-        .status(duplicateInstructionsPromptError.status)
-        .json(duplicateInstructionsPromptError.body);
-    }
-
+    // The duplicate carries the source agent's link verbatim: no ACL VIEW, PROMPTS
+    // USE, or resolvability check.
     const {
       id: _id,
       _id: __id,
@@ -2246,23 +2229,9 @@ const revertAgentVersionHandler = async (req, res) => {
       return res.status(subagentReferenceError.status).json(subagentReferenceError.body);
     }
 
-    // A revert can silently set/change/drop instructionsPrompt by restoring an older snapshot.
+    // A revert restores the snapshot's instructionsPrompt link as-is: no ACL VIEW,
+    // PROMPTS USE, or resolvability check.
     const revertInstructionsPromptLink = revertVersion?.instructionsPrompt ?? null;
-    const revertInstructionsPromptError = await checkInstructionsPromptWrite({
-      access: instructionsPromptAccess,
-      operation: 'revert',
-      user: { id: req.user.id, role: req.user.role },
-      previous: existingAgent.instructionsPrompt ?? null,
-      next: revertInstructionsPromptLink,
-      filters: req.config?.filters,
-      logger,
-      req,
-    });
-    if (revertInstructionsPromptError) {
-      return res
-        .status(revertInstructionsPromptError.status)
-        .json(revertInstructionsPromptError.body);
-    }
 
     // Permissions are enforced via route middleware (ACL EDIT)
 

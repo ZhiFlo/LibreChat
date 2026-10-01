@@ -48,26 +48,37 @@ jest.mock('@librechat/client', () => ({
     selectId,
     items,
     selectedValue,
+    displayValue,
     setValue,
   }: {
     ariaLabel: string;
     selectId?: string;
     items: Array<{ value: string; label: string }>;
     selectedValue: string;
+    displayValue?: string;
     setValue: (value: string) => void;
   }) => (
-    <select
-      aria-label={ariaLabel}
-      id={selectId}
-      value={selectedValue}
-      onChange={(event) => setValue(event.target.value)}
-    >
-      {items.map((item) => (
-        <option key={item.value} value={item.value}>
-          {item.label}
-        </option>
-      ))}
-    </select>
+    <div>
+      {/* Mirrors the real combobox's current-value text for the Prompt dropdown only,
+       *  which `displayValue` drives independently of `selectedValue`/`items` (the stub
+       *  shows a label with no matching option). Scoped to this one dropdown so it
+       *  doesn't duplicate the Version dropdown's option text in other assertions. */}
+      {selectId === 'instructions-prompt-group' && (
+        <span data-testid={`${selectId}-display-value`}>{displayValue}</span>
+      )}
+      <select
+        aria-label={ariaLabel}
+        id={selectId}
+        value={selectedValue}
+        onChange={(event) => setValue(event.target.value)}
+      >
+        {items.map((item) => (
+          <option key={item.value} value={item.value}>
+            {item.label}
+          </option>
+        ))}
+      </select>
+    </div>
   ),
 }));
 
@@ -359,6 +370,65 @@ describe('InstructionsPromptFields', () => {
       });
 
       expect(isValid).toBe(true);
+    });
+  });
+
+  describe('a restricted stub the editor cannot VIEW', () => {
+    const stub = { source: 'native' as const, restricted: true as const };
+
+    it('shows the localized "Restricted prompt" label as the current value, never a group name', () => {
+      mockGroupsQuery.data = [group()];
+      render(<Harness defaultInstructionsPrompt={stub} />);
+
+      /** The listed group ("Support triage") is still a selectable option below, so this
+       *  checks the dropdown's current-value text specifically, not the whole document. */
+      expect(screen.getByTestId('instructions-prompt-group-display-value')).toHaveTextContent(
+        'com_agents_instructions_prompt_restricted_title',
+      );
+    });
+
+    it('leaves the Prompt dropdown enabled so a replacement can be picked', () => {
+      mockGroupsQuery.data = [group()];
+      render(<Harness defaultInstructionsPrompt={stub} />);
+
+      expect(screen.getByRole('combobox', { name: 'com_ui_prompt' })).toBeInTheDocument();
+    });
+
+    it('disables the Version dropdown until a real group is picked', () => {
+      mockGroupsQuery.data = [group()];
+      render(<Harness defaultInstructionsPrompt={stub} />);
+
+      expect(
+        screen.getByText('com_agents_instructions_prompt_version_placeholder'),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole('combobox', { name: 'com_agents_instructions_prompt_version_label' }),
+      ).not.toBeInTheDocument();
+    });
+
+    it('replaces the stub with a picked group through the existing handleGroupChange', () => {
+      mockGroupsQuery.data = [group()];
+      let methods: UseFormReturn<AgentForm> | undefined;
+      render(<Harness defaultInstructionsPrompt={stub} onMethods={(m) => (methods = m)} />);
+
+      fireEvent.change(screen.getByRole('combobox', { name: 'com_ui_prompt' }), {
+        target: { value: 'group1' },
+      });
+
+      expect(methods?.getValues('instructionsPrompt')).toEqual({
+        source: 'native',
+        groupId: 'group1',
+        selection: { type: 'production' },
+      });
+    });
+
+    it('does not show the "Prompt not found" hint for a stub, which carries no groupId', () => {
+      mockGroupsQuery.data = [group()];
+      render(<Harness defaultInstructionsPrompt={stub} />);
+
+      expect(
+        screen.queryByText('com_agents_instructions_prompt_not_found'),
+      ).not.toBeInTheDocument();
     });
   });
 

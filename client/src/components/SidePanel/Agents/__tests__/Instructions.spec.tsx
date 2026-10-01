@@ -91,7 +91,7 @@ describe('Agent Instructions', () => {
     expect(screen.queryByTestId('restricted-instructions-prompt')).not.toBeInTheDocument();
   });
 
-  it('shows the restricted attachment and disables the toggle for a restricted link', () => {
+  it('shows the Prompt picker alongside the restricted note, with the toggle enabled, for a restricted link', () => {
     render(
       <InstructionsHarness
         instructionsSource="prompt"
@@ -100,13 +100,28 @@ describe('Agent Instructions', () => {
     );
 
     expect(screen.getByTestId('restricted-instructions-prompt')).toBeInTheDocument();
-    expect(screen.queryByTestId('instructions-prompt-fields')).not.toBeInTheDocument();
+    expect(screen.getByTestId('instructions-prompt-fields')).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: 'com_agents_instructions_source_inline' }),
-    ).toBeDisabled();
+    ).not.toBeDisabled();
     expect(
       screen.getByRole('button', { name: 'com_agents_instructions_source_prompt' }),
-    ).toBeDisabled();
+    ).not.toBeDisabled();
+  });
+
+  it('lets a restricted stub be switched to Inline, hiding the picker and showing the inline editor', () => {
+    render(
+      <InstructionsHarness
+        instructionsSource="prompt"
+        instructionsPrompt={{ source: 'native', restricted: true }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_agents_instructions_source_inline' }));
+
+    expect(screen.queryByTestId('instructions-prompt-fields')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('restricted-instructions-prompt')).not.toBeInTheDocument();
+    expect(screen.getByTestId('instructions-inline-panel')).not.toHaveClass('hidden');
   });
 
   it('reverts to the stored value when toggling back without saving', () => {

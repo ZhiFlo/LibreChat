@@ -15,7 +15,7 @@ import { cn } from '~/utils';
 export type InstructionsPromptStatus = 'ready' | 'loading' | 'error';
 
 /** Two-way segmented toggle between the inline editor and a linked prompt group. */
-function SourceToggle({ disabled }: { disabled: boolean }) {
+function SourceToggle({ disabled = false }: { disabled?: boolean }) {
   const localize = useLocalize();
   const { control } = useFormContext<AgentForm>();
 
@@ -88,10 +88,14 @@ export default function Instructions({
 
   return (
     <div className="mb-3 flex flex-col gap-2">
-      <SourceToggle disabled={restricted} />
+      <SourceToggle />
 
-      {isPromptMode &&
-        (restricted ? <RestrictedInstructionsPrompt /> : <InstructionsPromptFields />)}
+      {isPromptMode && (
+        <>
+          <InstructionsPromptFields />
+          {restricted && <RestrictedInstructionsPrompt />}
+        </>
+      )}
 
       <Controller
         name="instructions"

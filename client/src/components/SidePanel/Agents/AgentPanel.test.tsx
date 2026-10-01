@@ -1153,6 +1153,106 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
         await waitFor(() => expect(mockUpdateAgent).toHaveBeenCalledTimes(1));
         expect(mockUpdateAgent.mock.calls[0][0].data).toHaveProperty('instructionsPrompt', link);
       });
+
+      describe('a restricted stub the editor cannot VIEW', () => {
+        const stub = { source: 'native' as const, restricted: true as const };
+
+        it('sends instructionsPrompt: null when switched to Inline', async () => {
+          const { mockUseGetAgentByIdQuery, mockUpdateAgent } = setupMocks();
+
+          mockAgentQuery(mockUseGetAgentByIdQuery, {
+            name: 'Test Agent',
+            version: 2,
+            instructionsPrompt: stub,
+          });
+          mockFormDefaults = { instructionsSource: 'prompt', instructionsPrompt: stub };
+
+          mockUpdateAgent.mockResolvedValueOnce(
+            createMockAgent({ name: 'Test Agent', version: 2, instructionsPrompt: null }),
+          );
+
+          const Wrapper = createWrapper();
+          const { container } = render(<AgentPanel />, { wrapper: Wrapper });
+
+          await waitFor(() => expect(mockAgentConfigStatus).toBe('ready'));
+
+          act(() => {
+            capturedFormMethods!.setValue('instructionsSource', 'inline', { shouldDirty: true });
+          });
+
+          fireEvent.submit(container.querySelector('form')!);
+          await act(async () => {
+            mockFormSubmitHandler?.();
+          });
+
+          await waitFor(() => expect(mockUpdateAgent).toHaveBeenCalledTimes(1));
+          expect(mockUpdateAgent.mock.calls[0][0].data).toHaveProperty('instructionsPrompt', null);
+        });
+
+        it('omits instructionsPrompt when kept and an unrelated field is edited', async () => {
+          const { mockUseGetAgentByIdQuery, mockUpdateAgent } = setupMocks();
+
+          mockAgentQuery(mockUseGetAgentByIdQuery, {
+            name: 'Test Agent',
+            version: 2,
+            instructionsPrompt: stub,
+          });
+          mockFormDefaults = { instructionsSource: 'prompt', instructionsPrompt: stub };
+
+          mockUpdateAgent.mockResolvedValueOnce(
+            createMockAgent({ name: 'Renamed Agent', version: 2, instructionsPrompt: stub }),
+          );
+
+          const Wrapper = createWrapper();
+          const { container } = render(<AgentPanel />, { wrapper: Wrapper });
+
+          await waitFor(() => expect(mockAgentConfigStatus).toBe('ready'));
+
+          act(() => {
+            capturedFormMethods!.setValue('name', 'Renamed Agent', { shouldDirty: true });
+          });
+
+          fireEvent.submit(container.querySelector('form')!);
+          await act(async () => {
+            mockFormSubmitHandler?.();
+          });
+
+          await waitFor(() => expect(mockUpdateAgent).toHaveBeenCalledTimes(1));
+          expect(mockUpdateAgent.mock.calls[0][0].data).not.toHaveProperty('instructionsPrompt');
+        });
+
+        it('sends the new link when replaced with a different group', async () => {
+          const { mockUseGetAgentByIdQuery, mockUpdateAgent } = setupMocks();
+
+          mockAgentQuery(mockUseGetAgentByIdQuery, {
+            name: 'Test Agent',
+            version: 2,
+            instructionsPrompt: stub,
+          });
+          mockFormDefaults = { instructionsSource: 'prompt', instructionsPrompt: stub };
+
+          mockUpdateAgent.mockResolvedValueOnce(
+            createMockAgent({ name: 'Test Agent', version: 2, instructionsPrompt: link }),
+          );
+
+          const Wrapper = createWrapper();
+          const { container } = render(<AgentPanel />, { wrapper: Wrapper });
+
+          await waitFor(() => expect(mockAgentConfigStatus).toBe('ready'));
+
+          act(() => {
+            capturedFormMethods!.setValue('instructionsPrompt', link, { shouldDirty: true });
+          });
+
+          fireEvent.submit(container.querySelector('form')!);
+          await act(async () => {
+            mockFormSubmitHandler?.();
+          });
+
+          await waitFor(() => expect(mockUpdateAgent).toHaveBeenCalledTimes(1));
+          expect(mockUpdateAgent.mock.calls[0][0].data).toHaveProperty('instructionsPrompt', link);
+        });
+      });
     });
   });
 });

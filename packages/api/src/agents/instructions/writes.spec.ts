@@ -34,9 +34,8 @@ const logger = { warn: jest.fn(), error: jest.fn() };
 describe('checkInstructionsPromptWrite', () => {
   it('returns null without calling access when the field is absent', async () => {
     const validateLinkWrite = jest.fn();
-    const canUsePrompts = jest.fn();
     const result = await checkInstructionsPromptWrite({
-      access: { validateLinkWrite, canUsePrompts },
+      access: { validateLinkWrite },
       operation: 'update',
       user,
       previous: link,
@@ -45,13 +44,12 @@ describe('checkInstructionsPromptWrite', () => {
     });
     expect(result).toBeNull();
     expect(validateLinkWrite).not.toHaveBeenCalled();
-    expect(canUsePrompts).not.toHaveBeenCalled();
   });
 
-  it('requires the selection to resolve on create', async () => {
+  it('validates the link on create', async () => {
     const validateLinkWrite = jest.fn(async () => ({ ok: true as const }));
     await checkInstructionsPromptWrite({
-      access: { validateLinkWrite, canUsePrompts: jest.fn() },
+      access: { validateLinkWrite },
       operation: 'create',
       user,
       previous: undefined,
@@ -59,14 +57,14 @@ describe('checkInstructionsPromptWrite', () => {
       logger,
     });
     expect(validateLinkWrite).toHaveBeenCalledWith(
-      expect.objectContaining({ requireResolvable: true, previous: null, next: link }),
+      expect.objectContaining({ previous: null, next: link }),
     );
   });
 
-  it('requires the selection to resolve on update', async () => {
+  it('validates the link on update', async () => {
     const validateLinkWrite = jest.fn(async () => ({ ok: true as const }));
     await checkInstructionsPromptWrite({
-      access: { validateLinkWrite, canUsePrompts: jest.fn() },
+      access: { validateLinkWrite },
       operation: 'update',
       user,
       previous: otherLink,
@@ -74,22 +72,7 @@ describe('checkInstructionsPromptWrite', () => {
       logger,
     });
     expect(validateLinkWrite).toHaveBeenCalledWith(
-      expect.objectContaining({ requireResolvable: true, previous: otherLink, next: link }),
-    );
-  });
-
-  it('does not require the selection to resolve on revert', async () => {
-    const validateLinkWrite = jest.fn(async () => ({ ok: true as const }));
-    await checkInstructionsPromptWrite({
-      access: { validateLinkWrite, canUsePrompts: jest.fn() },
-      operation: 'revert',
-      user,
-      previous: otherLink,
-      next: link,
-      logger,
-    });
-    expect(validateLinkWrite).toHaveBeenCalledWith(
-      expect.objectContaining({ requireResolvable: false }),
+      expect.objectContaining({ previous: otherLink, next: link }),
     );
   });
 
@@ -100,7 +83,7 @@ describe('checkInstructionsPromptWrite', () => {
       code: InstructionsPromptErrorCode.FORBIDDEN,
     }));
     const result = await checkInstructionsPromptWrite({
-      access: { validateLinkWrite, canUsePrompts: jest.fn() },
+      access: { validateLinkWrite },
       operation: 'create',
       user,
       previous: undefined,
@@ -117,7 +100,7 @@ describe('checkInstructionsPromptWrite', () => {
     const validateLinkWrite = jest.fn(async () => ({ ok: true as const }));
     const filters = { pii: {} } as never;
     await checkInstructionsPromptWrite({
-      access: { validateLinkWrite, canUsePrompts: jest.fn() },
+      access: { validateLinkWrite },
       operation: 'create',
       user,
       previous: undefined,
@@ -128,90 +111,11 @@ describe('checkInstructionsPromptWrite', () => {
     expect(validateLinkWrite).toHaveBeenCalledWith(expect.objectContaining({ filters }));
   });
 
-  describe("operation: 'duplicate'", () => {
-    it('returns null without checking the role when the copied link is absent (undefined)', async () => {
-      const canUsePrompts = jest.fn();
-      const validateLinkWrite = jest.fn();
-      const result = await checkInstructionsPromptWrite({
-        access: { validateLinkWrite, canUsePrompts },
-        operation: 'duplicate',
-        user,
-        previous: undefined,
-        next: undefined,
-        logger,
-      });
-      expect(result).toBeNull();
-      expect(canUsePrompts).not.toHaveBeenCalled();
-      expect(validateLinkWrite).not.toHaveBeenCalled();
-    });
-
-    it('returns null without checking the role when the copied link is null (source was unlinked)', async () => {
-      const canUsePrompts = jest.fn();
-      const result = await checkInstructionsPromptWrite({
-        access: { validateLinkWrite: jest.fn(), canUsePrompts },
-        operation: 'duplicate',
-        user,
-        previous: undefined,
-        next: null,
-        logger,
-      });
-      expect(result).toBeNull();
-      expect(canUsePrompts).not.toHaveBeenCalled();
-    });
-
-    it('returns null, never checking the group ACL or resolvability, when the role has PROMPTS USE', async () => {
-      const canUsePrompts = jest.fn(async () => true);
-      const validateLinkWrite = jest.fn();
-      const result = await checkInstructionsPromptWrite({
-        access: { validateLinkWrite, canUsePrompts },
-        operation: 'duplicate',
-        user,
-        previous: undefined,
-        next: link,
-        logger,
-      });
-      expect(result).toBeNull();
-      expect(canUsePrompts).toHaveBeenCalledWith(user, undefined);
-      expect(validateLinkWrite).not.toHaveBeenCalled();
-    });
-
-    it('returns 403 instructions_prompt_forbidden when the role lacks PROMPTS USE', async () => {
-      const canUsePrompts = jest.fn(async () => false);
-      const result = await checkInstructionsPromptWrite({
-        access: { validateLinkWrite: jest.fn(), canUsePrompts },
-        operation: 'duplicate',
-        user,
-        previous: undefined,
-        next: link,
-        logger,
-      });
-      expect(result).toEqual({
-        status: 403,
-        body: { error: expect.any(String), code: InstructionsPromptErrorCode.FORBIDDEN },
-      });
-    });
-
-    it('forwards req to canUsePrompts so its role lookup can share the caller cache', async () => {
-      const canUsePrompts = jest.fn(async () => true);
-      const req = { marker: 'request-handle' };
-      await checkInstructionsPromptWrite({
-        access: { validateLinkWrite: jest.fn(), canUsePrompts },
-        operation: 'duplicate',
-        user,
-        previous: undefined,
-        next: link,
-        logger,
-        req,
-      });
-      expect(canUsePrompts).toHaveBeenCalledWith(user, req);
-    });
-  });
-
-  it('forwards req to validateLinkWrite for create/update/revert so its role lookup can share the caller cache', async () => {
+  it('forwards req to validateLinkWrite for create/update so its role lookup can share the caller cache', async () => {
     const validateLinkWrite = jest.fn(async () => ({ ok: true as const }));
     const req = { marker: 'request-handle' };
     await checkInstructionsPromptWrite({
-      access: { validateLinkWrite, canUsePrompts: jest.fn() },
+      access: { validateLinkWrite },
       operation: 'update',
       user,
       previous: otherLink,
@@ -223,20 +127,15 @@ describe('checkInstructionsPromptWrite', () => {
   });
 
   describe('an unexpected check failure', () => {
-    const buildThrowingAccess = (error: unknown) => ({
-      validateLinkWrite: jest.fn(async () => {
-        throw error;
-      }),
-      canUsePrompts: jest.fn(async () => {
-        throw error;
-      }),
-    });
-
-    it.each(['create', 'update', 'revert'] as const)(
+    it.each(['create', 'update'] as const)(
       'returns the fixed 500 and logs safely when validateLinkWrite throws on %s',
       async (operation) => {
         const log = { warn: jest.fn(), error: jest.fn() };
-        const access = buildThrowingAccess(new Error('acl outage: secret-detail'));
+        const access = {
+          validateLinkWrite: jest.fn(async () => {
+            throw new Error('acl outage: secret-detail');
+          }),
+        };
         const result = await checkInstructionsPromptWrite({
           access,
           operation,
@@ -258,35 +157,11 @@ describe('checkInstructionsPromptWrite', () => {
       },
     );
 
-    it('returns the fixed 500 and logs safely when canUsePrompts throws on duplicate', async () => {
-      const log = { warn: jest.fn(), error: jest.fn() };
-      const access = buildThrowingAccess(new Error('role lookup outage: secret-detail'));
-      const result = await checkInstructionsPromptWrite({
-        access,
-        operation: 'duplicate',
-        user,
-        previous: undefined,
-        next: link,
-        logger: log,
-      });
-      expect(result).toEqual({
-        status: 500,
-        body: {
-          error: 'Unable to validate the linked prompt',
-          code: InstructionsPromptErrorCode.VALIDATION_FAILED,
-        },
-      });
-      expect(log.error).toHaveBeenCalledTimes(1);
-      const [, metadata] = log.error.mock.calls[0];
-      expect(JSON.stringify(metadata)).not.toContain('secret-detail');
-    });
-
     it('rethrows a recognized content-filter error instead of masking it as a 500', async () => {
       const access = {
         validateLinkWrite: jest.fn(async () => {
           throw new ContentTraversalLimitError();
         }),
-        canUsePrompts: jest.fn(),
       };
       await expect(
         checkInstructionsPromptWrite({

@@ -236,6 +236,16 @@ export function computeInstructionsPromptChanged(
   formPrompt: AgentForm['instructionsPrompt'],
   lastLoadedPrompt: AgentForm['instructionsPrompt'] | null | undefined,
 ): boolean {
+  /** `resolveInstructionsPromptLink` collapses both a restricted stub and inline mode
+   *  to `null`, so diffing resolved values can't tell "still the stub" apart from
+   *  "switched to Inline" when the loaded link was a stub — both resolve to `null` on
+   *  the current side. Settle that case directly: it's changed when the form switched
+   *  to Inline (the removal must still reach the save) or now holds a real link. */
+  if (isRestrictedInstructionsPrompt(lastLoadedPrompt)) {
+    return (
+      formSource === 'inline' || (formPrompt != null && !isRestrictedInstructionsPrompt(formPrompt))
+    );
+  }
   const current = resolveInstructionsPromptLink(formSource, formPrompt);
   const stored = resolveInstructionsPromptLink(
     lastLoadedPrompt != null ? 'prompt' : 'inline',

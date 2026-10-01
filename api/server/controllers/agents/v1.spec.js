@@ -5498,7 +5498,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         expect(persisted.instructionsPrompt).toEqual(instructionsPrompt);
       });
 
-      test('returns 403 instructions_prompt_restricted when changing a link the editor cannot VIEW', async () => {
+      test("changes to a new link the editor can VIEW, regardless of the previous link's visibility", async () => {
         const { groupId: restrictedGroupId } = await createPromptGroupFixture('Restricted Group');
         const { groupId: nextGroupId } = await createPromptGroupFixture('Next Group');
         mockGroupVisibility(new Set([nextGroupId]));
@@ -5527,18 +5527,44 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
         await updateAgentHandler(mockReq, mockRes);
 
-        expect(mockRes.status).toHaveBeenCalledWith(403);
-        expect(mockRes.json).toHaveBeenCalledWith({
-          error: expect.any(String),
-          code: InstructionsPromptErrorCode.RESTRICTED,
-        });
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
         const persisted = await Agent.findOne({ id: agent.id }).lean();
-        expect(persisted.instructionsPrompt.groupId).toBe(restrictedGroupId);
+        expect(persisted.instructionsPrompt.groupId).toBe(nextGroupId);
       });
 
       test('removes the link (via $unset) when the update sets it to null', async () => {
         const { groupId } = await createPromptGroupFixture();
         mockGroupVisibility(new Set([groupId]));
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Removable Link Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: {
+            source: 'native',
+            groupId,
+            selection: { type: 'production' },
+          },
+        });
+
+        mockReq.params = { id: agent.id };
+        mockReq.body = { instructionsPrompt: null };
+
+        await updateAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.instructionsPrompt).toBeUndefined();
+        const persisted = await Agent.findOne({ id: agent.id }).lean();
+        expect(persisted.instructionsPrompt).toBeUndefined();
+      });
+
+      test('removes the link (via $unset) when the update sets it to null, even without VIEW', async () => {
+        const { groupId } = await createPromptGroupFixture();
+        mockGroupVisibility(new Set());
         const agent = await Agent.create({
           id: `agent_${nanoid()}`,
           author: mockReq.user.id,
@@ -6170,7 +6196,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         });
       });
 
-      describe('link gate (PROMPTS USE)', () => {
+      describe('no PROMPTS USE or VIEW check on a duplicate', () => {
         /** `getRoleByName` auto-creates a missing system role from defaults (which
          *  grant PROMPTS USE), so a role document must already exist to override it.
          *  Reset after each test so later tests see the auto-created default again. */
@@ -6190,7 +6216,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           await mongoose.models.Role.deleteMany({ name: 'USER' });
         });
 
-        test('returns 403 instructions_prompt_forbidden and creates nothing when the duplicator lacks PROMPTS USE', async () => {
+        test('copies the link when the duplicator lacks PROMPTS USE', async () => {
           const { groupId } = await createPromptGroupFixture('Duplicate Gate Group');
           const instructionsPrompt = {
             source: 'native',
@@ -6212,16 +6238,13 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
           await duplicateAgentHandler(mockReq, mockRes);
 
-          expect(mockRes.status).toHaveBeenCalledWith(403);
-          expect(mockRes.json).toHaveBeenCalledWith({
-            error: expect.any(String),
-            code: InstructionsPromptErrorCode.FORBIDDEN,
-          });
-          // Only the source agent exists: no duplicate, and no cloned actions.
-          expect(await Agent.countDocuments({})).toBe(1);
+          expect(mockRes.status).toHaveBeenCalledWith(201);
+          const newAgentId = mockRes.json.mock.calls[0][0].agent.id;
+          const persisted = await Agent.findOne({ id: newAgentId }).lean();
+          expect(persisted.instructionsPrompt).toEqual(instructionsPrompt);
         });
 
-        test('still allows duplicating an unlinked agent without PROMPTS USE', async () => {
+        test('allows duplicating an unlinked agent without PROMPTS USE', async () => {
           const agent = await Agent.create({
             id: `agent_${nanoid()}`,
             author: mockReq.user.id,
@@ -6240,7 +6263,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           expect(await Agent.countDocuments({})).toBe(2);
         });
 
-        test('still presents a restricted stub (201) when the duplicator has USE but not VIEW on the group', async () => {
+        test('presents a restricted stub (201) when the duplicator has no VIEW on the group', async () => {
           const { groupId } = await createPromptGroupFixture('Duplicate Gate Use Only Group');
           const instructionsPrompt = {
             source: 'native',
@@ -6312,7 +6335,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         expect(persisted.instructionsPrompt).toBeUndefined();
       });
 
-      test('returns 403 instructions_prompt_restricted when the revert would remove a link the editor cannot VIEW', async () => {
+      test('removes the current link via revert even though the editor cannot VIEW it (no VIEW check on a revert)', async () => {
         const { groupId } = await createPromptGroupFixture();
         // No VIEW grant for `groupId`: the editor cannot see the currently linked group.
         const agentId = `agent_${nanoid()}`;
@@ -6343,19 +6366,16 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
         await revertAgentVersionHandler(mockReq, mockRes);
 
-        expect(mockRes.status).toHaveBeenCalledWith(403);
-        expect(mockRes.json).toHaveBeenCalledWith({
-          error: expect.any(String),
-          code: InstructionsPromptErrorCode.RESTRICTED,
-        });
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
         const persisted = await Agent.findOne({ id: agentId }).lean();
-        expect(persisted.name).toBe('Current Prompt-Linked Agent');
-        expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+        expect(persisted.name).toBe('Pre-Link Agent');
+        expect(persisted.instructionsPrompt).toBeUndefined();
       });
 
-      test('returns 403 instructions_prompt_forbidden when the revert would set a link the editor cannot VIEW', async () => {
+      test('sets a snapshot link to a group the editor cannot VIEW via revert, with no VIEW or USE check', async () => {
         const { groupId } = await createPromptGroupFixture();
-        // No VIEW grant for `groupId`: the editor cannot see the group the snapshot links to.
+        // No VIEW grant for `groupId`, and no PROMPTS USE check runs for a revert either.
         const agentId = `agent_${nanoid()}`;
         await Agent.create({
           id: agentId,
@@ -6384,14 +6404,14 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
         await revertAgentVersionHandler(mockReq, mockRes);
 
-        expect(mockRes.status).toHaveBeenCalledWith(403);
-        expect(mockRes.json).toHaveBeenCalledWith({
-          error: expect.any(String),
-          code: InstructionsPromptErrorCode.FORBIDDEN,
-        });
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.name).toBe('Pre-Link Snapshot');
+        // Not visible, so presented as a restricted stub in the response.
+        expect(response.instructionsPrompt).toEqual({ source: 'native', restricted: true });
         const persisted = await Agent.findOne({ id: agentId }).lean();
-        expect(persisted.name).toBe('Current Unlinked Agent');
-        expect(persisted.instructionsPrompt).toBeUndefined();
+        expect(persisted.instructionsPrompt.groupId).toBe(groupId);
       });
 
       test('reverts successfully when the snapshot link is accessible, even though it no longer resolves', async () => {
@@ -6561,13 +6581,10 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           expect(mockRes.status).not.toHaveBeenCalledWith(403);
           const response = mockRes.json.mock.calls[0][0];
           expect(response.name).toBe('Deleted-Link Snapshot');
-          // The group no longer exists, so there is nothing left to protect —
-          // shown as-is rather than stubbed, per `presentForEditor`.
-          expect(response.instructionsPrompt).toEqual({
-            source: 'native',
-            groupId,
-            selection: { type: 'production' },
-          });
+          // The group's ACL entries went with it, so it reads as not-visible and is
+          // stubbed the same as any other hidden group — redaction has no separate
+          // existence check.
+          expect(response.instructionsPrompt).toEqual({ source: 'native', restricted: true });
           const persisted = await Agent.findOne({ id: agentId }).lean();
           expect(persisted.instructionsPrompt.groupId).toBe(groupId);
         });
@@ -7067,10 +7084,13 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
     });
 
     describe('unexpected validation failures (500)', () => {
-      /** Every case below forces a dependency `checkInstructionsPromptWrite` calls
-       *  (the ACL lookup, or — for duplicate — the role lookup) to throw, and
-       *  asserts the handler sends only the fixed, safe body: never the thrown
-       *  message, and nothing is created or persisted. */
+      /** Every case below forces the ACL lookup `checkInstructionsPromptWrite` calls
+       *  (via `validateLinkWrite`, for create/update) to throw, and asserts the
+       *  handler sends only the fixed, safe body: never the thrown message, and
+       *  nothing is created or persisted. Duplicate and revert never call
+       *  `validateLinkWrite` — they restore/copy the link as-is — so there is no
+       *  equivalent 500 case for them here; `presentForEditor`'s own fail-closed
+       *  behavior (stub, never 500) is covered under `duplicateAgentHandler` above. */
       const outageMessage = 'outage detail that must never reach the client';
 
       test('createAgentHandler returns the fixed 500 when the ACL lookup throws and creates nothing', async () => {
@@ -7148,18 +7168,25 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         expect(persisted.instructionsPrompt.groupId).toBe(currentGroupId);
       });
 
-      test('revertAgentVersionHandler returns the fixed 500 when the ACL lookup throws and does not revert', async () => {
+      test('revert restores the snapshot link when the ACL lookup fails and presents it fail-closed', async () => {
         const { groupId } = await createPromptGroupFixture('Validation Failure Revert Group');
         const agentId = `agent_${nanoid()}`;
         await Agent.create({
           id: agentId,
           author: mockReq.user.id,
-          name: 'Current Prompt-Linked Agent For Validation Failure',
+          name: 'Current Unlinked Agent For Validation Failure',
           provider: 'openai',
           model: 'gpt-4',
           tools: [],
-          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
-          versions: [{ name: 'Pre-Link Agent', provider: 'openai', model: 'gpt-4', tools: [] }],
+          versions: [
+            {
+              name: 'Pre-Link Snapshot',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+              instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+            },
+          ],
         });
 
         getResourcePermissionsMap.mockImplementation(async () => {
@@ -7171,20 +7198,18 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
         await revertAgentVersionHandler(mockReq, mockRes);
 
-        expect(mockRes.status).toHaveBeenCalledWith(500);
-        expect(mockRes.json).toHaveBeenCalledWith({
-          error: 'Unable to validate the linked prompt',
-          code: InstructionsPromptErrorCode.VALIDATION_FAILED,
-        });
-        expect(mockRes.json).not.toHaveBeenCalledWith(
-          expect.objectContaining({ error: expect.stringContaining(outageMessage) }),
-        );
+        // The thrown ACL lookup surfaces only in `presentForEditor`'s own
+        // fail-closed stubbing, not as a 500 — the revert itself proceeds and
+        // persists the snapshot's link, which the response presents as restricted.
+        expect(mockRes.status).not.toHaveBeenCalledWith(500);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.instructionsPrompt).toEqual({ source: 'native', restricted: true });
         const persisted = await Agent.findOne({ id: agentId }).lean();
-        expect(persisted.name).toBe('Current Prompt-Linked Agent For Validation Failure');
+        expect(persisted.name).toBe('Pre-Link Snapshot');
         expect(persisted.instructionsPrompt.groupId).toBe(groupId);
       });
 
-      test('duplicateAgentHandler returns the fixed 500 when the role lookup throws and creates nothing', async () => {
+      test('duplicateAgentHandler never calls getRoleByName for the link (no PROMPTS USE check on a duplicate)', async () => {
         const { groupId } = await createPromptGroupFixture('Validation Failure Duplicate Group');
         const agent = await Agent.create({
           id: `agent_${nanoid()}`,
@@ -7196,24 +7221,18 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
         });
 
-        // Duplicate's gate checks only the role (PROMPTS USE), never the ACL —
-        // so the role lookup itself must throw to exercise this path.
-        jest.spyOn(db, 'getRoleByName').mockRejectedValueOnce(new Error(outageMessage));
+        const getRoleByNameSpy = jest.spyOn(db, 'getRoleByName');
 
         mockReq.params = { id: agent.id };
 
         await duplicateAgentHandler(mockReq, mockRes);
 
-        expect(mockRes.status).toHaveBeenCalledWith(500);
-        expect(mockRes.json).toHaveBeenCalledWith({
-          error: 'Unable to validate the linked prompt',
-          code: InstructionsPromptErrorCode.VALIDATION_FAILED,
-        });
-        expect(mockRes.json).not.toHaveBeenCalledWith(
-          expect.objectContaining({ error: expect.stringContaining(outageMessage) }),
-        );
-        // Only the source agent exists: the gate ran before any clone/action/agent write.
-        expect(await Agent.countDocuments({})).toBe(1);
+        // Nothing calls the role lookup for a duplicate.
+        expect(getRoleByNameSpy).not.toHaveBeenCalled();
+        expect(mockRes.status).toHaveBeenCalledWith(201);
+        expect(await Agent.countDocuments({})).toBe(2);
+
+        getRoleByNameSpy.mockRestore();
       });
     });
   });

@@ -72,64 +72,45 @@ export type AgentWithVersionsCarrier = AgentInstructionsPromptCarrier & {
 export interface InstructionsPromptAccess {
   /** PROMPTGROUP `VIEW` bit test for `groupId` against the given identity. */
   canViewGroup(input: { userId: string; role: string; groupId: string }): Promise<boolean>;
-  /** Role-level PROMPTS `USE` gate (the `canUsePrompts` dependency injected into
-   *  `createInstructionsPromptAccess`), exposed so a caller can run this one check in
-   *  isolation. `checkInstructionsPromptWrite`'s `'duplicate'` operation is the one
-   *  write path that needs this: a duplicate copies the source agent's link verbatim,
-   *  with no ACL VIEW or resolvability check, but still requires the duplicator's own
-   *  role to grant PROMPTS USE before it may own a newly linked agent. `req` is
-   *  forwarded unexamined so the role lookup behind it can reuse the caller's
-   *  per-request role cache instead of re-reading the role document. */
-  canUsePrompts(
-    user: InstructionsPromptAccessUser,
-    req?: InstructionsPromptAccessRequest,
-  ): Promise<boolean>;
   /**
-   * Validates a create/update/revert write of `instructionsPrompt` against the stored
-   * link. `next === undefined` means the field is absent from the payload (no change
-   * requested). `requireResolvable: false` skips the `resolvePrompt` and content-policy
-   * checks — a revert's snapshot selection is allowed to no longer resolve, because a
-   * stale revision just continues the turn without instructions rather than failing.
+   * Validates a create/update write of `instructionsPrompt` against the stored link.
+   * `next === undefined` means the field is absent from the payload (no change
+   * requested) — ok. Keeping, removing (`next === null`), or re-submitting the
+   * unchanged link (`isSameLink`) is always ok: agent EDIT already authorizes all
+   * three, and none of them reveals anything about `previous`'s group that EDIT
+   * doesn't already know.
    *
-   * A linked group that no longer exists imposes no restriction: when `previous`
-   * points to a deleted group (so its ACL is gone and the editor can no longer VIEW
-   * it), the write proceeds as if there were no previous link — the editor may remove
-   * the link, replace it with one they can VIEW, or revert. Group existence is never
-   * revealed through a *new* link, though: a `next` group the editor cannot VIEW is
-   * still `FORBIDDEN` whether or not it exists, unless `requireResolvable` is false
-   * (a revert), in which case reverting onto a link whose group no longer exists is
-   * allowed — the runtime simply continues without instructions.
-   *
-   * A genuinely new or changed `next` (never a removal, never a re-selection of the
-   * unchanged value) also requires the role-level PROMPTS `USE` permission
-   * (`canUsePrompts`), `FORBIDDEN` otherwise — a PROMPTGROUP `VIEW` grant on one group
-   * says nothing about whether the role may link prompts at all. That role check and
-   * the next-group VIEW check are independent of each other, so both run concurrently
-   * instead of the role check gating the start of the VIEW lookup.
+   * A genuinely new or changed `next` requires the role-level PROMPTS `USE`
+   * permission (`canUsePrompts`) and PROMPTGROUP `VIEW` on `next.groupId`
+   * (`canViewGroup`), `FORBIDDEN` otherwise — a PROMPTGROUP `VIEW` grant on one group
+   * says nothing about whether the role may link prompts at all, and `next` not
+   * existing is indistinguishable from `next` existing but hidden, so group
+   * existence is never revealed through it. The two checks are independent, so both
+   * run concurrently instead of one gating the start of the other. Once both pass,
+   * the selection must still resolve and pass content policy (`UNAVAILABLE`
+   * otherwise).
    */
   validateLinkWrite(input: {
     user: InstructionsPromptAccessUser;
     previous: AgentInstructionsPrompt | null | undefined;
     next: AgentInstructionsPrompt | null | undefined;
     filters?: FiltersConfig;
-    requireResolvable: boolean;
     /** Forwarded unexamined to `canUsePrompts` so its role lookup can reuse the
      *  caller's per-request role cache. */
     req?: InstructionsPromptAccessRequest;
   }): Promise<InstructionsPromptWriteResult>;
-  /** Replaces an inaccessible link — on the agent itself and inside every `versions[i]`
-   *  snapshot — with a restricted stub before an EDIT-scoped response. Batches every
-   *  distinct linked group into a single permission lookup. A link to a group that no
-   *  longer exists is shown as-is instead: there is no group identity left to protect,
-   *  and showing it (rather than a stub) is what lets the Builder offer the editor a
-   *  removal or replacement for it.
+  /** Replaces every link the editor cannot VIEW — on the agent itself and inside every
+   *  `versions[i]` snapshot — with a restricted stub before an EDIT-scoped response.
+   *  Batches every distinct linked group into a single permission lookup. A deleted
+   *  group stubs the same as a hidden one: there is no group record left to check
+   *  existence against, so this redacts on VIEW alone.
    *
    *  Fails closed: this runs after the write it is presenting has already been
-   *  persisted, so an ACL-lookup or `getPromptGroup` failure here must never
-   *  surface as a 500 (a client retry on that 500 would create another
-   *  duplicate/etc. against the write that already succeeded). On such a
-   *  failure this logs a safe message and returns every link — top-level and
-   *  every version snapshot — as the restricted stub instead of throwing. */
+   *  persisted, so an ACL-lookup failure here must never surface as a 500 (a client
+   *  retry on that 500 would create another duplicate/etc. against the write that
+   *  already succeeded). On such a failure this logs a safe message and returns
+   *  every link — top-level and every version snapshot — as the restricted stub
+   *  instead of throwing. */
   presentForEditor<T extends AgentWithVersionsCarrier>(input: {
     user: InstructionsPromptAccessUser;
     agent: T;
@@ -192,19 +173,18 @@ function collectLinkGroupIds(
 /**
  * Builds the permission checks that gate reading and writing an agent's linked
  * instructions prompt. Callers (the `/api` write and read handlers) own the HTTP
- * boundary; this module only decides ok/forbidden/restricted/unavailable.
- * `validateLinkWrite` (and `canUsePrompts`, called directly for the `'duplicate'`
- * operation) throw on an unexpected permission or prompt-service failure rather than
- * swallowing it — that check runs before the write lands, so failing it is safe. The
- * caller, `checkInstructionsPromptWrite` (`./writes`), is the one that turns such a
+ * boundary; this module only decides ok/forbidden/unavailable.
+ * `validateLinkWrite` throws on an unexpected permission or prompt-service failure
+ * rather than swallowing it — that check runs before the write lands, so failing it
+ * is safe. The caller, `checkInstructionsPromptWrite` (`./writes`), is the one that turns such a
  * throw into a sanitized `500` rather than letting a raw `error.message` reach the
- * client; this module's job stops at ok/forbidden/restricted/unavailable or throwing.
+ * client; this module's job stops at ok/forbidden/unavailable or throwing.
  * `presentForEditor` and `presentVersionsForEditor` run after the write has already
  * been persisted and fail closed instead: see their own docs below.
  */
 export function createInstructionsPromptAccess(deps: {
   getResourcePermissionsMap: GetResourcePermissionsMap;
-  promptService: Pick<PromptService, 'resolvePrompt' | 'getPromptGroup'>;
+  promptService: Pick<PromptService, 'resolvePrompt'>;
   assertAgentInstructionsContent: AssertAgentInstructionsContent;
   canUsePrompts: CanUsePrompts;
   logger: InstructionsPromptAccessLogger;
@@ -216,15 +196,6 @@ export function createInstructionsPromptAccess(deps: {
     canUsePrompts,
     logger,
   } = deps;
-
-  /** Whether `groupId` still has a stored group record — a tenant-scoped, ACL-free
-   *  read, unlike `canViewGroup`. `deletePromptGroup` removes every ACL entry for a
-   *  group, so "not visible" alone can never distinguish a real restriction from a
-   *  group that simply no longer exists; this is what tells the two apart. */
-  async function groupExists(groupId: string): Promise<boolean> {
-    const result = await promptService.getPromptGroup({ groupId });
-    return result != null;
-  }
 
   async function canViewGroup({
     userId,
@@ -246,12 +217,10 @@ export function createInstructionsPromptAccess(deps: {
   }
 
   /**
-   * One batched permission lookup for every distinct `groupId` among the given links,
-   * followed by an existence check for only the not-visible ones. Returns the subset
-   * that must be redacted before an EDIT-scoped response — a group the editor cannot
-   * VIEW *and* that still exists. A link to a deleted group is never redacted: there
-   * is no group identity left to protect, and showing it as-is is what lets the
-   * Builder offer the editor a removal or replacement for it.
+   * One batched permission lookup for every distinct `groupId` among the given links.
+   * Returns the subset the editor cannot VIEW — the groups that must be redacted
+   * before an EDIT-scoped response. A deleted group has no ACL entries left, so it
+   * comes back not-visible and is redacted the same as a hidden one.
    */
   async function buildRedactionSet(
     user: InstructionsPromptAccessUser,
@@ -270,17 +239,7 @@ export function createInstructionsPromptAccess(deps: {
       const bits = permissionsMap.get(groupId) ?? 0;
       return (bits & PermissionBits.VIEW) !== PermissionBits.VIEW;
     });
-    if (notVisible.length === 0) {
-      return new Set();
-    }
-    const existence = await Promise.all(notVisible.map((groupId) => groupExists(groupId)));
-    const redact = new Set<string>();
-    notVisible.forEach((groupId, index) => {
-      if (existence[index]) {
-        redact.add(groupId);
-      }
-    });
-    return redact;
+    return new Set(notVisible);
   }
 
   function redactIfHidden<T extends AgentInstructionsPromptCarrier>(
@@ -326,14 +285,12 @@ export function createInstructionsPromptAccess(deps: {
     previous,
     next,
     filters,
-    requireResolvable,
     req,
   }: {
     user: InstructionsPromptAccessUser;
     previous: AgentInstructionsPrompt | null | undefined;
     next: AgentInstructionsPrompt | null | undefined;
     filters?: FiltersConfig;
-    requireResolvable: boolean;
     req?: InstructionsPromptAccessRequest;
   }): Promise<InstructionsPromptWriteResult> {
     if (next === undefined) {
@@ -345,20 +302,9 @@ export function createInstructionsPromptAccess(deps: {
       // even when the editor cannot VIEW the group.
       return { ok: true };
     }
-    if (previous != null) {
-      const previousVisible = await canViewGroup({
-        userId: user.id,
-        role: user.role,
-        groupId: previous.groupId,
-      });
-      if (!previousVisible && (await groupExists(previous.groupId))) {
-        return { ok: false, status: 403, code: InstructionsPromptErrorCode.RESTRICTED };
-      }
-      // Either visible, or a deleted group: it imposes no restriction on `next`.
-    }
     if (next == null) {
-      // Removing a link the editor could VIEW (or that never existed, or no longer
-      // exists) is always allowed.
+      // Removing a link, regardless of whether the editor could VIEW the previous
+      // group, is always allowed — agent EDIT is the only authority this needs.
       return { ok: true };
     }
     // A genuinely new or changed link (never a removal, and never a re-selection of the
@@ -373,19 +319,9 @@ export function createInstructionsPromptAccess(deps: {
       return { ok: false, status: 403, code: InstructionsPromptErrorCode.FORBIDDEN };
     }
     if (!nextVisible) {
-      // A revert may land on a link whose group has since been deleted — allowed,
-      // since the runtime just continues without instructions. A *new* link (any
-      // other write) stays FORBIDDEN regardless of existence, so group existence is
-      // never revealed through it.
-      if (!requireResolvable && !(await groupExists(next.groupId))) {
-        return { ok: true };
-      }
+      // FORBIDDEN regardless of whether the group exists, so group existence is never
+      // revealed through a new link.
       return { ok: false, status: 403, code: InstructionsPromptErrorCode.FORBIDDEN };
-    }
-    if (!requireResolvable) {
-      // A revert's snapshot selection may no longer resolve; that is a runtime
-      // continue-without-instructions case, not a rejected write. Access checks only.
-      return { ok: true };
     }
     const resolved = await promptService.resolvePrompt({
       groupId: next.groupId,
@@ -471,7 +407,6 @@ export function createInstructionsPromptAccess(deps: {
 
   return {
     canViewGroup,
-    canUsePrompts,
     validateLinkWrite,
     presentForEditor,
     presentVersionsForEditor,

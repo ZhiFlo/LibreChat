@@ -2,10 +2,11 @@ import { Lock } from 'lucide-react';
 import { useLocalize } from '~/hooks';
 
 /**
- * Read-only stand-in for a linked prompt group the current editor cannot VIEW.
- * The server strips the group identity and content before it reaches this
- * component (`{ source: 'native', restricted: true }`), so nothing here can
- * name or preview the linked prompt.
+ * Note shown alongside the Prompt picker when the linked group is a restricted
+ * stub the current editor cannot VIEW. The server strips the group identity and
+ * content before it reaches this component (`{ source: 'native', restricted: true
+ * }`), so nothing here can name or preview the linked prompt; the picker next to
+ * it still lets the editor replace the link or switch to inline instructions.
  */
 export default function RestrictedInstructionsPrompt() {
   const localize = useLocalize();

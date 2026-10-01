@@ -60,7 +60,6 @@ export function buildPromptVersionOptions(
 export const instructionsPromptErrorKeys: Record<InstructionsPromptErrorCode, TranslationKeys> = {
   [InstructionsPromptErrorCode.UNAVAILABLE]: 'com_agents_instructions_prompt_error_unavailable',
   [InstructionsPromptErrorCode.FORBIDDEN]: 'com_agents_instructions_prompt_error_forbidden',
-  [InstructionsPromptErrorCode.RESTRICTED]: 'com_agents_instructions_prompt_error_restricted',
   [InstructionsPromptErrorCode.VALIDATION_FAILED]:
     'com_agents_instructions_prompt_error_validation_failed',
 };
