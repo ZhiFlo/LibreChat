@@ -291,7 +291,104 @@ describe('createPromptHandlers linked-instructions cache clearing', () => {
       expect(res.body).toEqual({ message: 'Prompt production made successfully' });
       expect(errorSpy).toHaveBeenCalledWith(
         '[prompts] Failed to clear the linked-instructions cache',
-        expect.any(Error),
+        {
+          groupId,
+          type: 'Error',
+        },
+      );
+    });
+  });
+
+  describe('cache clear bound', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('promote returns 200 and logs once after the limit when the clear never settles', async () => {
+      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+      const invalidateLinkedPrompt = jest.fn().mockReturnValue(new Promise(() => {}));
+      const service = makeService({
+        makePromptProduction: jest.fn().mockResolvedValue({
+          ok: true,
+          value: { message: 'Prompt production made successfully' },
+          groupId,
+        }),
+      });
+      const handlers = createPromptHandlers(makeDeps({ service, invalidateLinkedPrompt }));
+      const res = mockRes();
+
+      const pending = handlers.makePromptProduction(withLoadedRevision(), res);
+      await jest.advanceTimersByTimeAsync(1000);
+      await pending;
+
+      expect(res.statusCode).toBe(200);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledWith(
+        '[prompts] Failed to clear the linked-instructions cache',
+        {
+          groupId,
+          type: 'Error',
+        },
+      );
+    });
+
+    it('deletePrompt returns 200 and logs once after the limit when the clear never settles', async () => {
+      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+      const invalidateLinkedPrompt = jest.fn().mockReturnValue(new Promise(() => {}));
+      const service = makeService({
+        deletePrompt: jest
+          .fn()
+          .mockResolvedValue({ ok: true, value: { prompt: 'Prompt deleted successfully' } }),
+      });
+      const handlers = createPromptHandlers(makeDeps({ service, invalidateLinkedPrompt }));
+      const res = mockRes();
+
+      const pending = handlers.deletePrompt(
+        mockReq({ params: { promptId }, query: { groupId } }),
+        res,
+      );
+      await jest.advanceTimersByTimeAsync(1000);
+      await pending;
+
+      expect(res.statusCode).toBe(200);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledWith(
+        '[prompts] Failed to clear the linked-instructions cache',
+        {
+          groupId,
+          type: 'Error',
+        },
+      );
+    });
+
+    it('deletePromptGroup returns 200 and logs once after the limit when the clear never settles', async () => {
+      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+      const invalidateLinkedPrompt = jest.fn().mockReturnValue(new Promise(() => {}));
+      const service = makeService({
+        getPrompts: jest.fn().mockResolvedValue([{ _id: 'prompt-1' }]),
+        deletePromptGroup: jest
+          .fn()
+          .mockResolvedValue({ message: 'Prompt group deleted successfully' }),
+      });
+      const handlers = createPromptHandlers(makeDeps({ service, invalidateLinkedPrompt }));
+      const res = mockRes();
+
+      const pending = handlers.deletePromptGroup(mockReq({ params: { groupId } }), res);
+      await jest.advanceTimersByTimeAsync(1000);
+      await pending;
+
+      expect(res.statusCode).toBe(200);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledWith(
+        '[prompts] Failed to clear the linked-instructions cache',
+        {
+          groupId,
+          type: 'Error',
+        },
       );
     });
   });

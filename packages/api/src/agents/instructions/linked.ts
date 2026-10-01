@@ -5,10 +5,11 @@ import type {
   AgentInstructionsPromptSelection,
   RestrictedAgentInstructionsPrompt,
 } from 'librechat-data-provider';
-import type { PromptService, ResolvedPrompt } from '~/prompts';
+import type { PromptService } from '~/prompts/service';
+import type { ResolvedPrompt } from '~/prompts/types';
 import { assertModelBoundContent } from '~/middleware/modelBoundContent';
 import { isContentFilterError } from '~/middleware/contentFilter';
-import { inspectPromptContent } from '~/prompts';
+import { inspectPromptContent } from '~/prompts/protection';
 
 /**
  * Narrows `link` to a resolvable `native` link — the same test
@@ -206,9 +207,14 @@ function isPromptBlocked(prompt: string, filters: FiltersConfig | undefined): bo
  * `signal` aborts — clearing the timeout timer right away rather than leaving
  * it to fire later. The underlying `operation` itself is not cancelled, only
  * this wait is, so a cache/adapter call already in flight cannot outlive its
- * caller's abort handling.
+ * caller's abort handling. Exported so other cache-bound call sites (for
+ * example, the prompt handlers' cache clear) share this instead of a copy.
  */
-function runBounded<T>(operation: Promise<T>, timeoutMs: number, signal?: AbortSignal): Promise<T> {
+export function runBounded<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     const cleanup = (): void => {

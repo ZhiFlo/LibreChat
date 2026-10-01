@@ -6,7 +6,9 @@ import type { PromptViaGroupResource } from './access';
 import type { PromptService } from './service';
 import type { ServerRequest } from '~/types';
 import { contentFilterBlockResponse } from '~/middleware/contentFilter';
+import { runBounded } from '~/agents/instructions/linked';
 import { formatPromptGroupsResponse } from './format';
+import { getSafeErrorMetadata } from '~/utils';
 import { isPromptStoreError } from './errors';
 
 /** A request after the prompt access middleware stored the resolved record. */
@@ -91,10 +93,19 @@ function sendRejection(res: Response, error: PromptServiceError): Response {
 }
 
 /**
+ * Bounds the cache clear so a stalled delete (for example, Redis down with the
+ * offline queue enabled) cannot hold the HTTP response after the write has
+ * already committed. Not configurable.
+ */
+const CACHE_CLEAR_TIMEOUT_MS = 1000;
+
+/**
  * Clears the linked-instructions cache so a promote or delete reaches linked agents
  * on the next request instead of after the cache's TTL. A no-op when no cache is
- * wired. The write this follows has already succeeded; a clear failure only loses
- * cache warmth, so it is logged rather than surfaced.
+ * wired. The write this follows has already succeeded; the clear waits at most
+ * `CACHE_CLEAR_TIMEOUT_MS` and lets the delete finish in the background past that
+ * limit. A timeout and a rejection both log and continue rather than surface, since
+ * either one only loses cache warmth.
  */
 async function clearLinkedPromptCache(
   deps: PromptHandlersDeps,
@@ -105,9 +116,12 @@ async function clearLinkedPromptCache(
     return;
   }
   try {
-    await deps.invalidateLinkedPrompt(groupId, promptIds);
+    await runBounded(deps.invalidateLinkedPrompt(groupId, promptIds), CACHE_CLEAR_TIMEOUT_MS);
   } catch (error) {
-    logger.error('[prompts] Failed to clear the linked-instructions cache', error);
+    logger.error('[prompts] Failed to clear the linked-instructions cache', {
+      groupId,
+      ...getSafeErrorMetadata(error),
+    });
   }
 }
 
