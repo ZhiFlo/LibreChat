@@ -6650,6 +6650,129 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         expect(persisted.instructionsPrompt.groupId).toBe(groupId);
         expect(persisted.versions[0].instructions).toBe(blockedInstructions);
       });
+
+      test("rejects a revert that removes the current link, landing on a snapshot that omits instructions, by scanning the agent's current stored text", async () => {
+        const { groupId } = await createPromptGroupFixture('Revert Fallback Scan Group');
+        mockGroupVisibility(new Set([groupId]));
+        const blockedInstructions = 'Use sk-private-token for requests';
+        const agentId = `agent_${nanoid()}`;
+        await Agent.create({
+          id: agentId,
+          author: mockReq.user.id,
+          name: 'Currently Linked Agent With Dead Text',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructions: blockedInstructions,
+          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+          versions: [
+            {
+              name: 'Unlinked Snapshot Without Instructions',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+            },
+          ],
+        });
+
+        mockReq.config = {
+          filters: { agentInstructions: { pii: { starterPatterns: ['sk_prefix'] } } },
+        };
+        mockReq.params = { id: agentId };
+        mockReq.body = { version_index: 0 };
+
+        await revertAgentVersionHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(400);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response).toEqual(
+          expect.objectContaining({
+            error: 'content_filter_block',
+            source: 'agent_instruction',
+            field: 'instructions',
+          }),
+        );
+        const persisted = await Agent.findOne({ id: agentId }).lean();
+        // The revert never applied: the current link and stored text are untouched.
+        expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+        expect(persisted.instructions).toBe(blockedInstructions);
+      });
+
+      test("allows a revert that removes the current link, landing on a snapshot that omits instructions, when the agent's current stored text is allowed", async () => {
+        const { groupId } = await createPromptGroupFixture('Revert Fallback Allowed Group');
+        mockGroupVisibility(new Set([groupId]));
+        const allowedInstructions = 'Current allowed instructions';
+        const agentId = `agent_${nanoid()}`;
+        await Agent.create({
+          id: agentId,
+          author: mockReq.user.id,
+          name: 'Currently Linked Agent With Allowed Text',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructions: allowedInstructions,
+          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+          versions: [
+            {
+              name: 'Unlinked Snapshot Without Instructions',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+            },
+          ],
+        });
+
+        mockReq.config = {
+          filters: { agentInstructions: { pii: { starterPatterns: ['sk_prefix'] } } },
+        };
+        mockReq.params = { id: agentId };
+        mockReq.body = { version_index: 0 };
+
+        await revertAgentVersionHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        const persisted = await Agent.findOne({ id: agentId }).lean();
+        expect(persisted.instructionsPrompt).toBeUndefined();
+        expect(persisted.instructions).toBe(allowedInstructions);
+      });
+
+      test('leaves a never-linked revert unaffected by the fallback: no link to remove, so the base behavior (scan only what the snapshot sends) still applies', async () => {
+        const blockedInstructions = 'Use sk-private-token for requests';
+        const agentId = `agent_${nanoid()}`;
+        await Agent.create({
+          id: agentId,
+          author: mockReq.user.id,
+          name: 'Never-Linked Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructions: blockedInstructions,
+          versions: [
+            {
+              name: 'Snapshot Without Instructions',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+            },
+          ],
+        });
+
+        mockReq.config = {
+          filters: { agentInstructions: { pii: { starterPatterns: ['sk_prefix'] } } },
+        };
+        mockReq.params = { id: agentId };
+        mockReq.body = { version_index: 0 };
+
+        await revertAgentVersionHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        const persisted = await Agent.findOne({ id: agentId }).lean();
+        // Unaffected by the fallback: no link to remove, so the stored text was
+        // never a candidate for the scan.
+        expect(persisted.instructions).toBe(blockedInstructions);
+      });
     });
 
     describe('getAgentVersionsHandler', () => {

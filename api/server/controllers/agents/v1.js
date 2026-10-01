@@ -2295,8 +2295,10 @@ const revertAgentVersionHandler = async (req, res) => {
         : [];
 
     // Dead once linked (see `initializeAgent`), so it can't block a switch to a safe link.
-    // No fallback is passed: `revertVersion.instructions` is already the snapshot's own
-    // field on `data`, so the base behavior (scan what's present) already covers it.
+    // `fallbackInstructions` covers the snapshot omitting `instructions` entirely: unlike
+    // `instructionsPrompt`, `revertAgentVersion` never unsets `instructions` for a missing
+    // field, so the agent's current stored text stays active and must be scanned when a
+    // valid link is being removed.
     if (
       (await blockFilteredAgentContent(
         req,
@@ -2304,6 +2306,7 @@ const revertAgentVersionHandler = async (req, res) => {
         excludeInstructionsWhenLinked(revertVersion, {
           previous: existingAgent.instructionsPrompt ?? null,
           effective: revertInstructionsPromptLink,
+          fallbackInstructions: existingAgent.instructions,
         }),
       )) ||
       blockFilteredActionContent(req, res, actions)
