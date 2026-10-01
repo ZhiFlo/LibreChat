@@ -103,12 +103,14 @@ router.delete(
     requiredPermission: PermissionBits.DELETE,
     resourceIdParam: 'promptId',
   }),
+  configMiddleware,
   handlers.deletePrompt,
 );
 router.delete(
   '/groups/:groupId',
   checkPromptCreate,
   canAccessPromptGroupResource({ requiredPermission: PermissionBits.DELETE }),
+  configMiddleware,
   handlers.deletePromptGroup,
 );
 
