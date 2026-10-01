@@ -247,4 +247,97 @@ describe('VersionPanel', () => {
       expect.anything(),
     );
   });
+
+  test('treats versions as different when only the linked prompt differs', () => {
+    const linkA = {
+      source: 'native',
+      groupId: 'group-a',
+      selection: { type: 'production' },
+    };
+    const linkB = {
+      source: 'native',
+      groupId: 'group-b',
+      selection: { type: 'production' },
+    };
+    const baseVersion = {
+      name: mockAgentData.name,
+      description: mockAgentData.description,
+      instructions: mockAgentData.instructions,
+      tools: mockAgentData.tools,
+      capabilities: mockAgentData.capabilities,
+      edges: mockAgentData.edges,
+    };
+
+    mockUseGetExpandedAgentByIdQuery.mockReturnValueOnce({
+      data: { ...mockAgentData, instructionsPrompt: linkA },
+      isLoading: false,
+      error: null,
+      refetch: jest.fn(),
+    });
+    mockUseGetAgentVersionsQuery.mockReturnValueOnce({
+      data: [
+        { ...baseVersion, instructionsPrompt: linkA, updatedAt: '2023-01-02T00:00:00Z' },
+        { ...baseVersion, instructionsPrompt: linkB, updatedAt: '2023-01-01T00:00:00Z' },
+      ],
+      isLoading: false,
+      error: null,
+      refetch: jest.fn(),
+    });
+
+    render(<VersionPanel />);
+    expect(VersionContent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        versionContext: expect.objectContaining({
+          activeVersion: expect.objectContaining({ instructionsPrompt: linkA }),
+          versionIds: [
+            expect.objectContaining({ isActive: true }),
+            expect.objectContaining({ isActive: false }),
+          ],
+        }),
+      }),
+      expect.anything(),
+    );
+  });
+
+  test('treats versions with identical linked prompts as active', () => {
+    const link = {
+      source: 'native',
+      groupId: 'group-a',
+      selection: { type: 'production' },
+    };
+    const baseVersion = {
+      name: mockAgentData.name,
+      description: mockAgentData.description,
+      instructions: mockAgentData.instructions,
+      tools: mockAgentData.tools,
+      capabilities: mockAgentData.capabilities,
+      edges: mockAgentData.edges,
+    };
+
+    mockUseGetExpandedAgentByIdQuery.mockReturnValueOnce({
+      data: { ...mockAgentData, instructionsPrompt: link },
+      isLoading: false,
+      error: null,
+      refetch: jest.fn(),
+    });
+    mockUseGetAgentVersionsQuery.mockReturnValueOnce({
+      data: [
+        { ...baseVersion, instructionsPrompt: { ...link }, updatedAt: '2023-01-01T00:00:00Z' },
+      ],
+      isLoading: false,
+      error: null,
+      refetch: jest.fn(),
+    });
+
+    render(<VersionPanel />);
+    expect(VersionContent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        versionContext: expect.objectContaining({
+          activeVersion: expect.objectContaining({ instructionsPrompt: link }),
+          versionIds: [expect.objectContaining({ isActive: true })],
+        }),
+      }),
+      expect.anything(),
+    );
+  });
 });

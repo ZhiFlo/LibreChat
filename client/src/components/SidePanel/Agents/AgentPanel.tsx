@@ -18,6 +18,7 @@ import {
 } from 'librechat-data-provider';
 import type { Agent, AgentUpdateParams } from 'librechat-data-provider';
 import type { FieldNamesMarkedBoolean } from 'react-hook-form';
+import type { InstructionsPromptStatus } from './Instructions';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import type { AgentParameterConfig } from './parameters';
 import type { AgentForm, StringOption } from '~/common';
@@ -424,6 +425,18 @@ export default function AgentPanel() {
 
   const agentQuery = canEdit && expandedAgentQuery.data ? expandedAgentQuery : basicAgentQuery;
 
+  const isPersistedAgent = Boolean(current_agent_id) && !isEphemeralAgent(current_agent_id);
+  /** `instructionsPrompt` only ever arrives on the expanded query. A persisted,
+   *  editable agent stays in a disabled loading (or error) state here until that
+   *  query resolves, instead of briefly reading a linked agent as unlinked. */
+  let instructionsPromptStatus: InstructionsPromptStatus = 'ready';
+  if (isPersistedAgent && canEdit && !expandedAgentQuery.data) {
+    instructionsPromptStatus = expandedAgentQuery.isError ? 'error' : 'loading';
+  }
+  const retryInstructionsPrompt = useCallback(() => {
+    expandedAgentQuery.refetch();
+  }, [expandedAgentQuery]);
+
   const modelsReady = modelsQuery.isFetchedAfterMount && !modelsQuery.isFetching;
   const modelsError = modelsQuery.isFetchedAfterMount && !modelsQuery.isSuccess;
   /** The models query is seeded with a static fallback config, so its entries only describe the
@@ -829,6 +842,7 @@ export default function AgentPanel() {
                 setCurrentAgentId={setCurrentAgentId}
                 selectedAgentId={agentQuery.isInitialLoading ? null : (current_agent_id ?? null)}
                 defaultStatefulCodeEnvironment={defaultStatefulCodeEnvironment}
+                instructionsPromptReady={instructionsPromptStatus === 'ready'}
               />
             </div>
             {agent_id && (
@@ -882,7 +896,10 @@ export default function AgentPanel() {
             />
           )}
           {canEditAgent && !agentQuery.isInitialLoading && activePanel === Panel.builder && (
-            <AgentConfig />
+            <AgentConfig
+              instructionsPromptStatus={instructionsPromptStatus}
+              onRetryInstructionsPrompt={retryInstructionsPrompt}
+            />
           )}
           {canEditAgent && !agentQuery.isInitialLoading && activePanel === Panel.advanced && (
             <AdvancedPanel />

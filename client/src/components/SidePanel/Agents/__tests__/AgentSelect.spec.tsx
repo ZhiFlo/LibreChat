@@ -30,11 +30,15 @@ jest.mock('@librechat/client', () => ({
 function Harness({
   agent,
   onMethods,
+  instructionsPromptReady,
+  defaultValues,
 }: {
   agent: Agent;
   onMethods: (methods: UseFormReturn<AgentForm>) => void;
+  instructionsPromptReady?: boolean;
+  defaultValues?: Partial<AgentForm>;
 }) {
-  const methods = useForm<AgentForm>();
+  const methods = useForm<AgentForm>({ defaultValues });
   onMethods(methods);
 
   return (
@@ -51,6 +55,7 @@ function Harness({
           { reset: jest.fn() } as unknown as UseMutationResult<Agent, Error, AgentCreateParams>
         }
         defaultStatefulCodeEnvironment="user"
+        instructionsPromptReady={instructionsPromptReady}
       />
     </FormProvider>
   );
@@ -112,5 +117,34 @@ describe('AgentSelect resetAgentForm', () => {
 
     await waitFor(() => expect(methods?.getValues('instructionsSource')).toBe('inline'));
     expect(methods?.getValues('instructionsPrompt')).toBeNull();
+  });
+
+  it('keeps the form instructions-source/prompt untouched when the data is the basic projection', async () => {
+    let methods: UseFormReturn<AgentForm> | undefined;
+
+    render(
+      <Harness
+        /** No `instructionsPrompt` key at all, as the basic agent projection sends it. */
+        agent={createAgent()}
+        instructionsPromptReady={false}
+        defaultValues={{
+          instructionsSource: 'prompt',
+          instructionsPrompt: {
+            source: 'native',
+            groupId: 'group_1',
+            selection: { type: 'production' },
+          },
+        }}
+        onMethods={(m) => (methods = m)}
+      />,
+    );
+
+    await waitFor(() => expect(methods?.getValues('name')).toBe('Agent'));
+    expect(methods?.getValues('instructionsSource')).toBe('prompt');
+    expect(methods?.getValues('instructionsPrompt')).toEqual({
+      source: 'native',
+      groupId: 'group_1',
+      selection: { type: 'production' },
+    });
   });
 });

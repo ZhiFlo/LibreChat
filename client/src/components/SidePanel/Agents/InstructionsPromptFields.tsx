@@ -12,10 +12,10 @@ import {
 import { useGetAllPromptGroups, useGetPrompts } from '~/data-provider';
 import { useLocalize } from '~/hooks';
 
-const fieldWrapperClass =
+export const fieldWrapperClass =
   'flex h-9 items-center rounded-lg border border-border-light bg-surface-secondary px-3 text-sm text-text-secondary';
 
-function LoadError({ forbidden, onRetry }: { forbidden: boolean; onRetry: () => void }) {
+export function LoadError({ forbidden, onRetry }: { forbidden: boolean; onRetry: () => void }) {
   const localize = useLocalize();
   return (
     <div className="flex flex-col gap-1.5 rounded-lg border border-border-light bg-surface-secondary px-3 py-2 text-sm text-text-secondary">

@@ -1,12 +1,18 @@
 import { Button } from '@librechat/client';
 import { Controller, useWatch, useFormContext } from 'react-hook-form';
 import type { AgentForm } from '~/common';
+import InstructionsPromptFields, { fieldWrapperClass, LoadError } from './InstructionsPromptFields';
 import { isRestrictedInstructionsPrompt } from './instructionsPromptUtils';
 import RestrictedInstructionsPrompt from './RestrictedInstructionsPrompt';
-import InstructionsPromptFields from './InstructionsPromptFields';
 import { VariableEditor } from '~/components/Variables';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
+
+/** Status of the expanded agent query that `instructionsPrompt` arrives on. A
+ * persisted agent's basic projection never carries `instructionsPrompt`, so this
+ * section stays in a disabled loading (or error) state until the expanded query
+ * resolves, rather than briefly reading the link as absent. */
+export type InstructionsPromptStatus = 'ready' | 'loading' | 'error';
 
 /** Two-way segmented toggle between the inline editor and a linked prompt group. */
 function SourceToggle({ disabled }: { disabled: boolean }) {
@@ -49,13 +55,36 @@ function SourceToggle({ disabled }: { disabled: boolean }) {
   );
 }
 
-export default function Instructions() {
+export default function Instructions({
+  promptStatus = 'ready',
+  onRetryLoad,
+}: {
+  promptStatus?: InstructionsPromptStatus;
+  onRetryLoad?: () => void;
+}) {
   const localize = useLocalize();
   const { control } = useFormContext<AgentForm>();
   const instructionsSource = useWatch({ control, name: 'instructionsSource' });
   const instructionsPrompt = useWatch({ control, name: 'instructionsPrompt' });
   const restricted = isRestrictedInstructionsPrompt(instructionsPrompt);
   const isPromptMode = instructionsSource === 'prompt';
+
+  /** The expanded agent query (the only source of `instructionsPrompt`) has not
+   * resolved yet: nothing here is derived from the basic projection, which would
+   * otherwise read a linked agent as unlinked. Controls stay disabled so a save
+   * cannot carry an instructions change until the real link is known. */
+  if (promptStatus !== 'ready') {
+    return (
+      <div className="mb-3 flex flex-col gap-2">
+        <SourceToggle disabled />
+        {promptStatus === 'error' ? (
+          <LoadError forbidden={false} onRetry={onRetryLoad ?? (() => {})} />
+        ) : (
+          <div className={fieldWrapperClass}>{localize('com_ui_loading')}</div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="mb-3 flex flex-col gap-2">
