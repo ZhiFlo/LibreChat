@@ -136,28 +136,20 @@ function mapServiceErrorReason(
 }
 
 /**
- * Whether `prompt` is blocked under the caller's current filters. Applies
- * both policies a linked prompt is subject to: the prompt-library policy
- * (`filters.prompts.pii`, via `inspectPromptContent` — the same check
- * `resolvePrompt` itself runs on a fresh fetch) and the agent-instructions
- * policy (`filters.agentInstructions.pii`, via `assertModelBoundContent`'s
- * `agents` field — the same check inline agent instructions and repository
- * instructions get at init). Content that only trips the second policy would
- * otherwise reach the model unfiltered, since linked content used to get only
- * the first.
+ * Whether `prompt` is blocked under the agent-instructions policy
+ * (`filters.agentInstructions.pii`, via `assertModelBoundContent`'s `agents`
+ * field — the same check inline agent instructions and repository
+ * instructions get at init).
  *
  * Uses `isContentFilterError` — the same helper `access.ts` uses to recognize
  * a content-policy rejection — rather than an `instanceof ContentFilterError`
  * check, so every content-policy error `assertModelBoundContent` can throw
- * (including a traversal-limit or uninspectable-file error) maps to
- * `blocked_content` consistently. An unrecognized error still throws (the
- * caller, `checkPromptBlocked` below, catches it and maps it to the
- * resolver's generic `'error'` reason rather than rejecting the resolution).
+ * (including a traversal-limit or uninspectable-file error) maps to a block
+ * consistently. An unrecognized error still throws (the caller,
+ * `checkPromptBlocked` below, catches it and maps it to the resolver's
+ * generic `'error'` reason rather than rejecting the resolution).
  */
-function isPromptBlocked(prompt: string, filters: FiltersConfig | undefined): boolean {
-  if (inspectPromptContent({ prompt }, filters) != null) {
-    return true;
-  }
+function isBlockedAsAgentInstructions(prompt: string, filters: FiltersConfig | undefined): boolean {
   try {
     assertModelBoundContent({ filters, agents: [{ instructions: prompt }] });
     return false;
@@ -167,6 +159,19 @@ function isPromptBlocked(prompt: string, filters: FiltersConfig | undefined): bo
     }
     throw error;
   }
+}
+
+/**
+ * Whether `prompt` is blocked under either policy a linked prompt is subject
+ * to: the prompt-library policy (`filters.prompts.pii`, via
+ * `inspectPromptContent` — the same check `resolvePrompt` runs on a fresh
+ * fetch) or the agent-instructions policy (`isBlockedAsAgentInstructions`).
+ */
+function isPromptBlocked(prompt: string, filters: FiltersConfig | undefined): boolean {
+  return (
+    inspectPromptContent({ prompt }, filters) != null ||
+    isBlockedAsAgentInstructions(prompt, filters)
+  );
 }
 
 /**
@@ -223,11 +228,14 @@ function cacheReadBudgetMs(timeoutMs: number): number {
  * Builds the runtime resolver for an agent's linked native prompt-group
  * instructions.
  *
- * Cache-first: a hit is re-inspected against the caller's *current* filters
- * (so a policy change blocks a previously-cached prompt) before being
- * returned; a miss calls `resolvePrompt` and writes the cache only on
- * success, while unaborted, and only when `cacheTtlMs > 0`. `cacheTtlMs === 0`
- * skips the cache read entirely (and never writes).
+ * Cache-first: a hit is checked under both policies — prompt-library and
+ * agent-instructions — with the caller's *current* filters (so a policy
+ * change blocks a previously-cached prompt) before being returned. A miss
+ * calls `resolvePrompt`, which already applies the prompt-library policy
+ * with the same filters, so the miss path checks only the
+ * agent-instructions policy and writes the cache only on success, while
+ * unaborted, and only when `cacheTtlMs > 0`. `cacheTtlMs === 0` skips the
+ * cache read entirely (and never writes).
  *
  * Latency is bounded by one shared deadline (`config.timeoutMs` from the
  * moment `resolve` is called), not by re-arming a fresh timeout per phase —
@@ -299,10 +307,17 @@ export function createLinkedInstructionsResolver(
     /** Neither content-policy check ever rejects the resolution: a recognized
      *  content-policy error maps to `blocked_content`, and anything else — an
      *  unexpected throw from `assertModelBoundContent` — is logged and mapped
-     *  to the generic `'error'` reason instead of propagating. */
-    const checkPromptBlocked = (prompt: string): 'ok' | 'blocked' | 'error' => {
+     *  to the generic `'error'` reason instead of propagating. `isBlocked` is
+     *  `isPromptBlocked` for a cache hit (both policies) or
+     *  `isBlockedAsAgentInstructions` for a fresh `resolvePrompt` result
+     *  (agent-instructions policy only, since `resolvePrompt` already applied
+     *  the prompt-library policy with the same filters). */
+    const checkPromptBlocked = (
+      prompt: string,
+      isBlocked: (prompt: string, filters: FiltersConfig | undefined) => boolean,
+    ): 'ok' | 'blocked' | 'error' => {
       try {
-        return isPromptBlocked(prompt, filters) ? 'blocked' : 'ok';
+        return isBlocked(prompt, filters) ? 'blocked' : 'ok';
       } catch (error) {
         logger.error('[linkedInstructions] Content-policy check failed', {
           groupId: link.groupId,
@@ -313,7 +328,7 @@ export function createLinkedInstructionsResolver(
     };
 
     if (cached) {
-      const blockCheck = checkPromptBlocked(cached.prompt);
+      const blockCheck = checkPromptBlocked(cached.prompt, isPromptBlocked);
       if (blockCheck !== 'ok') {
         return {
           status: 'unavailable',
@@ -351,7 +366,7 @@ export function createLinkedInstructionsResolver(
       return { status: 'unavailable', reason: 'error' };
     }
 
-    const fetchedBlockCheck = checkPromptBlocked(fetched.prompt);
+    const fetchedBlockCheck = checkPromptBlocked(fetched.prompt, isBlockedAsAgentInstructions);
     if (fetchedBlockCheck !== 'ok') {
       return {
         status: 'unavailable',

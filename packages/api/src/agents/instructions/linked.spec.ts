@@ -240,6 +240,22 @@ describe('createLinkedInstructionsResolver', () => {
     await expect(cache.get(`native:${groupId}:production`)).resolves.toBeUndefined();
   });
 
+  it('does not re-run the prompt-library policy on a fresh resolution, leaving it to resolvePrompt', async () => {
+    const cache = new FakeCache();
+    const promptService = makePromptService({
+      resolvePrompt: jest.fn().mockResolvedValue({
+        ok: true,
+        value: makeResolvedPrompt({ prompt: 'Contains PRIVATE-SECRET marker' }),
+      }),
+    });
+    const logger = makeLogger();
+    const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+    const result = await resolver({ link: productionLink, filters: blockingFilters });
+
+    expect(result.status).toBe('resolved');
+  });
+
   it('maps any content-policy error the content check throws to blocked_content, not just ContentFilterError', async () => {
     // A traversal-limit error is a content-policy error `isContentFilterError`
     // recognizes, but not an `instanceof ContentFilterError` — this is exactly

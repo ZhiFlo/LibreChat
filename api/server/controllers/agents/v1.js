@@ -48,14 +48,10 @@ const {
   resolveAgentWorkspaceRestoreConfiguration,
   shouldValidateAgentWorkspaceDefaultBinding,
   validateAgentWorkspaceDefaultBinding,
-  createPromptService,
-  createInstructionsPromptAccess,
   checkInstructionsPromptWrite,
   applyInstructionsPromptUnset,
   effectiveInstructionsPromptLink,
   excludeInstructionsWhenLinked,
-  assertModelBoundContent,
-  checkAccess,
 } = require('@librechat/api');
 const {
   Time,
@@ -63,10 +59,8 @@ const {
   SkillsScope,
   CacheKeys,
   Constants,
-  Permissions,
   FileSources,
   ResourceType,
-  PermissionTypes,
   AccessRoleIds,
   PrincipalType,
   EToolResources,
@@ -101,6 +95,7 @@ const {
 } = require('~/server/services/MCP');
 const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const { attachOwnerContacts } = require('~/server/services/Agents/ownerContact');
+const { instructionsPromptAccess } = require('~/server/services/Agents/instructionsPrompt');
 const { getMCPServersRegistry } = require('~/config');
 const { getLogStores } = require('~/cache');
 const db = require('~/models');
@@ -119,26 +114,6 @@ const getSafeModelParameters = (modelParameters) => {
   return typeof useResponsesApi === 'boolean' ? { useResponsesApi } : {};
 };
 const hasEditBit = (permission) => (permission & PermissionBits.EDIT) === PermissionBits.EDIT;
-
-/** Wiring only: the write/present decision logic lives in `@librechat/api` (`createInstructionsPromptAccess`, `checkInstructionsPromptWrite`). */
-const instructionsPromptAccess = createInstructionsPromptAccess({
-  getResourcePermissionsMap,
-  promptService: createPromptService({ db, grantPermission }),
-  assertAgentInstructionsContent: ({ instructions, filters }) =>
-    assertModelBoundContent({ filters, agents: [{ instructions }] }),
-  /** The same role-level gate `checkPromptAccess` applies to every `/prompts` route
-   *  (`PermissionTypes.PROMPTS`, `Permissions.USE`). Only `.role` is read, so the
-   *  `{ id, role }` identity `validateLinkWrite` carries is enough. */
-  canUsePrompts: (user, req) =>
-    checkAccess({
-      req,
-      user,
-      permissionType: PermissionTypes.PROMPTS,
-      permissions: [Permissions.USE],
-      getRoleByName: db.getRoleByName,
-    }),
-  logger,
-});
 
 const blockFilteredActionContent = (req, res, actions) => {
   const filters = req.config?.filters;

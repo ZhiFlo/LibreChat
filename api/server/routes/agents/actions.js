@@ -10,9 +10,6 @@ const {
   ACTION_CREDENTIAL_REFRESH_MESSAGE,
   buildActionOAuthTokenDeleteQueries,
   blockFilteredActionProjection,
-  createPromptService,
-  createInstructionsPromptAccess,
-  assertModelBoundContent,
 } = require('@librechat/api');
 const {
   Permissions,
@@ -29,25 +26,13 @@ const {
   encryptMetadata,
   domainParser,
 } = require('~/server/services/ActionService');
-const {
-  findAccessibleResources,
-  getResourcePermissionsMap,
-  grantPermission,
-} = require('~/server/services/PermissionService');
+const { findAccessibleResources } = require('~/server/services/PermissionService');
 const { attachOwnerContacts } = require('~/server/services/Agents/ownerContact');
+const { instructionsPromptAccess } = require('~/server/services/Agents/instructionsPrompt');
 const db = require('~/models');
 const { canAccessAgentResource } = require('~/server/middleware');
 
 const router = express.Router();
-
-// Same wiring as `controllers/agents/v1.js`; this route only reads a link (`presentForEditor`).
-const instructionsPromptAccess = createInstructionsPromptAccess({
-  getResourcePermissionsMap,
-  promptService: createPromptService({ db, grantPermission }),
-  assertAgentInstructionsContent: ({ instructions, filters }) =>
-    assertModelBoundContent({ filters, agents: [{ instructions }] }),
-  logger,
-});
 
 async function deleteActionOAuthTokens(action_id) {
   await Promise.all(
