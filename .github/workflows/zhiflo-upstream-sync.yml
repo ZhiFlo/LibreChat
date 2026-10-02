@@ -86,9 +86,15 @@ jobs:
         if: steps.detect.outputs.should_run == 'true'
         run: npm run build:packages
 
-      - name: Test client
+      - name: Test client shard 1
         if: steps.detect.outputs.should_run == 'true'
-        run: npm run test:client
+        working-directory: client
+        run: npm run test:ci -- --shard=1/2
+
+      - name: Test client shard 2
+        if: steps.detect.outputs.should_run == 'true'
+        working-directory: client
+        run: npm run test:ci -- --shard=2/2
 
       - name: Test API
         if: steps.detect.outputs.should_run == 'true'
