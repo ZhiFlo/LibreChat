@@ -5,6 +5,7 @@ import {
   EModelEndpoint,
   FetchTokenConfig,
   extractEnvVariable,
+  hasOpenIDAuthorizationHeader,
 } from 'librechat-data-provider';
 import type { TEndpoint } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
@@ -204,6 +205,10 @@ export async function initializeCustom(
 
   const userProvidesKey = isUserProvided(CUSTOM_API_KEY);
   const userProvidesURL = isUserProvided(CUSTOM_BASE_URL);
+  const usesOpenIDHeaderAuth =
+    endpointConfig.provider == null &&
+    !userProvidesURL &&
+    hasOpenIDAuthorizationHeader(endpointConfig.headers);
 
   // Expiry is only checked when present: the Agents API sends an OpenAI-compatible
   // request body that does not include `key` (the expiry timestamp), so expiresAt
@@ -217,7 +222,9 @@ export async function initializeCustom(
     userValues = await db.getUserKeyValues({ userId: user?.id ?? '', name: endpoint });
   }
 
-  const apiKey = userProvidesKey || userProvidesURL ? userValues?.apiKey : CUSTOM_API_KEY;
+  const apiKey =
+    (userProvidesKey || userProvidesURL ? userValues?.apiKey : CUSTOM_API_KEY) ||
+    (usesOpenIDHeaderAuth ? 'librechat-openid-header-auth' : undefined);
   const baseURL = userProvidesURL ? userValues?.baseURL : CUSTOM_BASE_URL;
 
   if ((userProvidesKey || userProvidesURL) && !apiKey) {

@@ -1724,6 +1724,18 @@ export const paramDefinitionSchema = z.object({
   selectPlaceholderCode: z.boolean().optional(),
 });
 
+export function hasOpenIDAuthorizationHeader(headers?: Record<string, string>): boolean {
+  const authorization = headers?.Authorization ?? headers?.authorization;
+  if (typeof authorization !== 'string') {
+    return false;
+  }
+
+  return (
+    authorization.includes('{{LIBRECHAT_OPENID_ACCESS_TOKEN}}') ||
+    authorization.includes('{{LIBRECHAT_OPENID_TOKEN}}')
+  );
+}
+
 export const endpointSchema = baseEndpointSchema.merge(
   z.object({
     name: z.string().refine((value) => !eModelEndpointSchema.safeParse(value).success, {

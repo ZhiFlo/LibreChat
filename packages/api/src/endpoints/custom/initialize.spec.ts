@@ -177,6 +177,33 @@ describe('initializeCustom – Agents API user key resolution', () => {
 });
 
 describe('initializeCustom – OpenAI-compatible header forwarding', () => {
+  it('supports trusted OpenID Authorization header auth without a configured apiKey', async () => {
+    const params = createParams({
+      apiKey: '',
+      baseURL: 'https://api.zhiflo.com/v1',
+      headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+    });
+
+    await initializeCustom(params);
+
+    expect(mockGetOpenAIConfig).toHaveBeenCalledWith(
+      'librechat-openid-header-auth',
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+      }),
+      'test-custom',
+    );
+  });
+
+  it('still rejects a missing apiKey when no OpenID Authorization header is configured', async () => {
+    const params = createParams({
+      apiKey: '',
+      baseURL: 'https://api.zhiflo.com/v1',
+    });
+
+    await expect(initializeCustom(params)).rejects.toThrow('API key not provided');
+  });
+
   const userControlledHeaderCases: Array<{
     headerType: string;
     headers: Record<string, string>;

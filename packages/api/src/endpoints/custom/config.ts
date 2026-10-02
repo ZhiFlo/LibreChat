@@ -1,4 +1,9 @@
-import { EModelEndpoint, extractEnvVariable, normalizeEndpointName } from 'librechat-data-provider';
+import {
+  EModelEndpoint,
+  extractEnvVariable,
+  hasOpenIDAuthorizationHeader,
+  normalizeEndpointName,
+} from 'librechat-data-provider';
 import type { TCustomEndpoints, TEndpoint } from 'librechat-data-provider';
 import type { TCustomEndpointsConfig } from '~/types/endpoints';
 import { resolveEndpointProviderId } from './providers';
@@ -21,7 +26,10 @@ export function loadCustomEndpointsConfig(
     const filteredEndpoints = customEndpoints.filter(
       (endpoint) =>
         endpoint.baseURL &&
-        endpoint.apiKey &&
+        (endpoint.apiKey ||
+          (endpoint.provider == null &&
+            endpoint.baseURL !== 'user_provided' &&
+            hasOpenIDAuthorizationHeader(endpoint.headers))) &&
         endpoint.name &&
         endpoint.models &&
         (endpoint.models.fetch || endpoint.models.default),

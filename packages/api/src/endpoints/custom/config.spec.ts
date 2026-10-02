@@ -44,6 +44,24 @@ describe('loadCustomEndpointsConfig – native provider param set', () => {
 });
 
 describe('loadCustomEndpointsConfig – user credential prompts', () => {
+  it('accepts trusted OpenID Authorization header auth without an apiKey', () => {
+    const config = loadCustomEndpointsConfig([
+      {
+        name: 'OIDC Gateway',
+        baseURL: 'https://api.zhiflo.com/v1',
+        models: { default: ['gpt-5.6'] },
+        headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+      },
+    ] as unknown as TCustomEndpoints);
+
+    expect(config?.['OIDC Gateway']).toEqual(
+      expect.objectContaining({
+        userProvide: false,
+        userProvideURL: false,
+      }),
+    );
+  });
+
   it('requires a user key when the custom base URL is user-provided', () => {
     const config = loadCustomEndpointsConfig([
       { ...baseEndpoint, name: 'User URL', baseURL: AuthType.USER_PROVIDED },
