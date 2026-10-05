@@ -125,6 +125,9 @@ class CustomOpenIDStrategy extends OpenIDStrategy {
 
   authorizationRequestParams(req, options) {
     const params = super.authorizationRequestParams(req, options);
+    if (process.env.OPENID_RESOURCE) {
+      params.set('resource', process.env.OPENID_RESOURCE);
+    }
     if (options?.state && !params.has('state')) {
       params.set('state', options.state);
     }

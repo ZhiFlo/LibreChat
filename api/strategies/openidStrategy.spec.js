@@ -379,6 +379,16 @@ describe('setupOpenId', () => {
   describe('authorizationRequestParams', () => {
     const getLoginStrategy = () => require('openid-client/passport').__getStrategyByName('openid');
 
+    it('requests the configured API resource from the identity provider', () => {
+      process.env.OPENID_RESOURCE = 'https://api.zhiflo.com';
+      try {
+        const params = getLoginStrategy().authorizationRequestParams({}, {});
+        expect(params.get('resource')).toBe('https://api.zhiflo.com');
+      } finally {
+        delete process.env.OPENID_RESOURCE;
+      }
+    });
+
     it('adds a single OpenID audience to authorization requests', () => {
       process.env.OPENID_AUDIENCE = 'librechat';
 
