@@ -97,6 +97,33 @@ describe('tenant-scoped custom endpoints', () => {
   });
 });
 
+describe('account-scoped custom model discovery', () => {
+  const endpoint = {
+    name: 'ZhiFlo',
+    baseURL: 'https://api.example/v1',
+    headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+    modelGroups: { path: 'zhiflo/groups' },
+  };
+
+  it('loads header-authenticated discovery without a static model or shared key', () => {
+    const config = configSchema.parse({
+      version: '1.2.1',
+      endpoints: { custom: [{ ...endpoint, models: { default: [], fetch: true } }] },
+    });
+    expect(config.endpoints?.custom?.[0]).toMatchObject({
+      models: { default: [], fetch: true },
+      modelGroups: { path: 'zhiflo/groups', header: 'X-ZhiFlo-Group', timeoutMs: 5000 },
+    });
+    expect(config.endpoints?.custom?.[0].apiKey).toBeFalsy();
+  });
+
+  it.each([false, undefined])('rejects an empty model list without discovery: %s', (fetch) => {
+    expect(endpointSchema.safeParse({ ...endpoint, models: { default: [], fetch } }).success).toBe(
+      false,
+    );
+  });
+});
+
 describe('agent model response timeouts', () => {
   it('ships finite defaults and accepts explicit overrides including disabled timeouts', () => {
     expect(agentsEndpointSchema.parse({})).toMatchObject({
