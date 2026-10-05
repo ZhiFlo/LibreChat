@@ -19,9 +19,9 @@ COPY --from=build --chown=node:node /app/packages/api/dist ./packages/api/dist
 COPY --chown=node:node api/server/middleware/config/app.js ./api/server/middleware/config/app.js
 COPY --chown=node:node api/server/routes/models.js ./api/server/routes/models.js
 COPY --chown=node:node api/strategies/openidStrategy.js ./api/strategies/openidStrategy.js
-ARG BUILD_COMMIT
+ARG IMAGE_REVISION
 ARG IMAGE_VERSION
-ARG BUILD_DATE
-LABEL org.opencontainers.image.revision=$BUILD_COMMIT \
+ARG IMAGE_BUILD_DATE
+LABEL org.opencontainers.image.revision=$IMAGE_REVISION \
       org.opencontainers.image.version=$IMAGE_VERSION
-ENV BUILD_COMMIT=$BUILD_COMMIT BUILD_BRANCH=main BUILD_DATE=$BUILD_DATE
+ENV BUILD_COMMIT=$IMAGE_REVISION BUILD_BRANCH=main BUILD_DATE=$IMAGE_BUILD_DATE
