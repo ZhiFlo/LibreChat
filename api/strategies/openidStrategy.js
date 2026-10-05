@@ -137,6 +137,12 @@ class CustomOpenIDStrategy extends OpenIDStrategy {
       );
     }
 
+    // Logto keeps its browser session active after LibreChat logout. Ask it to
+    // show the account chooser so users can switch ZhiFlo accounts explicitly.
+    if (isEnabled(process.env.OPENID_SELECT_ACCOUNT)) {
+      params.set('prompt', 'select_account');
+    }
+
     /** Generate nonce for federated providers that require it */
     const shouldGenerateNonce = isEnabled(process.env.OPENID_GENERATE_NONCE);
     if (shouldGenerateNonce && !params.has('nonce') && this._sessionKey) {
