@@ -46,9 +46,9 @@ export function applyOpenIDResource(params: URLSearchParams): URLSearchParams {
 
 export function applyOpenIDAccountPrompt(params: URLSearchParams): URLSearchParams {
   if (isEnabled(process.env.OPENID_SELECT_ACCOUNT)) {
-    // Logto does not implement select_account. The standard login prompt also
-    // requires interaction when an existing identity-provider session is active.
-    params.set('prompt', 'login select_account');
+    // Logto rejects select_account. The supported login prompt requires
+    // interaction even when an identity-provider session is already active.
+    params.set('prompt', 'login');
   }
   return params;
 }

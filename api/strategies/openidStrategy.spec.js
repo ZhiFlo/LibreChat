@@ -380,11 +380,11 @@ describe('setupOpenId', () => {
   describe('authorizationRequestParams', () => {
     const getLoginStrategy = () => require('openid-client/passport').__getStrategyByName('openid');
 
-    it('requires account interaction even when the identity provider ignores select_account', () => {
+    it('requires account interaction using a prompt supported by Logto', () => {
       process.env.OPENID_SELECT_ACCOUNT = 'true';
       try {
         const params = getLoginStrategy().authorizationRequestParams({}, {});
-        expect(params.get('prompt')).toBe('login select_account');
+        expect(params.get('prompt')).toBe('login');
       } finally {
         delete process.env.OPENID_SELECT_ACCOUNT;
       }
