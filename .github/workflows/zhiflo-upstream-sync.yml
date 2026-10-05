@@ -146,10 +146,6 @@ jobs:
           echo "short_sha=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
           echo "date_tag=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
 
-      - name: Set up QEMU
-        if: steps.detect.outputs.should_run == 'true'
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         if: steps.detect.outputs.should_run == 'true'
         uses: docker/setup-buildx-action@v3
@@ -168,7 +164,7 @@ jobs:
         with:
           context: .
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           tags: |
             ${{ env.IMAGE_NAME }}:latest
             ${{ env.IMAGE_NAME }}:main
