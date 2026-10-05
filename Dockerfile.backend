@@ -1,17 +1,14 @@
 # Backend-only releases reuse the unchanged v0.8.8 production client.
 # Build with: docker build --platform linux/amd64 -f Dockerfile.backend .
-FROM ghcr.io/zhiflo/librechat@sha256:9beae1cf573ee1d9020ad02b67735c9e0d397068bedd133a4e506146c4eb68d0 AS build
+FROM ghcr.io/zhiflo/librechat@sha256:d45aadc5e85154ef866fb1b46a7c47861e3559832d0baff3b0ecddbe68676a26 AS build
 USER root
 ENV SCARF_ANALYTICS=false NODE_OPTIONS=--max-old-space-size=1536
-COPY package-lock.json /tmp/backend-package-lock.json
-# Reuse installed dependencies only when their exact lock file is unchanged.
-# Dependency changes require the full Dockerfile and a new client build.
-RUN cmp package-lock.json /tmp/backend-package-lock.json
-COPY package.json ./
+COPY package.json package-lock.json ./
 COPY api/package.json ./api/package.json
 COPY client/package.json ./client/package.json
 COPY packages/ ./packages/
-RUN npm run build:data-provider \
+RUN npm ci --ignore-scripts --no-audit --no-fund \
+    && npm run build:data-provider \
     && npm run build:data-schemas \
     && npm run build:api
 
