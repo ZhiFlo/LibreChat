@@ -155,6 +155,7 @@ jest.mock('openid-client/passport', () => {
     this.verify = verify;
   });
   mockStrategy.prototype.authorizationRequestParams = jest.fn(() => new URLSearchParams());
+  mockStrategy.prototype.authorizationCodeGrantParameters = jest.fn(() => ({}));
 
   return {
     Strategy: mockStrategy,
@@ -379,11 +380,24 @@ describe('setupOpenId', () => {
   describe('authorizationRequestParams', () => {
     const getLoginStrategy = () => require('openid-client/passport').__getStrategyByName('openid');
 
+    it('requires account interaction even when the identity provider ignores select_account', () => {
+      process.env.OPENID_SELECT_ACCOUNT = 'true';
+      try {
+        const params = getLoginStrategy().authorizationRequestParams({}, {});
+        expect(params.get('prompt')).toBe('login select_account');
+      } finally {
+        delete process.env.OPENID_SELECT_ACCOUNT;
+      }
+    });
+
     it('requests the configured API resource from the identity provider', () => {
       process.env.OPENID_RESOURCE = 'https://api.zhiflo.com';
       try {
         const params = getLoginStrategy().authorizationRequestParams({}, {});
         expect(params.get('resource')).toBe('https://api.zhiflo.com');
+        expect(getLoginStrategy().authorizationCodeGrantParameters({}, {})).toEqual({
+          resource: 'https://api.zhiflo.com',
+        });
       } finally {
         delete process.env.OPENID_RESOURCE;
       }

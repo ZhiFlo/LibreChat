@@ -9,6 +9,7 @@ export * from './ban';
 export * from './json';
 export * from './capabilities';
 export * from './auth';
+export * from './appConfig';
 export {
   requestContextMiddleware,
   tenantContextMiddleware,

@@ -40,6 +40,24 @@ describe('createLoadConfigModels – user-provided baseURL header guard', () => 
     mockValidateEndpointURL.mockReset().mockResolvedValue(undefined);
   });
 
+  it('loads models with the current OpenID identity without asking for an API key', async () => {
+    const headers = { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' };
+    fetchModels.mockResolvedValue(['allowed-model']);
+    const config = buildAppConfig({ baseURL: 'https://api.example/v1', apiKey: '', headers });
+    const load = createLoadConfigModels({
+      getAppConfig: jest.fn().mockResolvedValue(config),
+      getUserKeyValues: jest.fn(),
+      fetchModels,
+    });
+    const user = { id: 'current-user' };
+    expect(await load({ user } as unknown as ServerRequest)).toEqual({
+      TestProxy: ['allowed-model'],
+    });
+    expect(fetchModels).toHaveBeenCalledWith(
+      expect.objectContaining({ userObject: user, headers }),
+    );
+  });
+
   it('does NOT forward configured headers when baseURL is user-provided', async () => {
     const headers = {
       Authorization: 'Bearer {{LIBRECHAT_OPENID_ID_TOKEN}}',

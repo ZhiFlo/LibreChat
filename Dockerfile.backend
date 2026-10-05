@@ -1,0 +1,27 @@
+# Backend-only releases reuse the unchanged v0.8.8 production client.
+# Build with: docker build --platform linux/amd64 -f Dockerfile.backend .
+FROM ghcr.io/zhiflo/librechat@sha256:d45aadc5e85154ef866fb1b46a7c47861e3559832d0baff3b0ecddbe68676a26 AS build
+USER root
+ENV SCARF_ANALYTICS=false NODE_OPTIONS=--max-old-space-size=1536
+COPY package.json package-lock.json ./
+COPY api/package.json ./api/package.json
+COPY client/package.json ./client/package.json
+COPY packages/ ./packages/
+RUN npm ci --ignore-scripts --no-audit --no-fund \
+    && npm run build:data-provider \
+    && npm run build:data-schemas \
+    && npm run build:api
+
+FROM ghcr.io/zhiflo/librechat@sha256:d45aadc5e85154ef866fb1b46a7c47861e3559832d0baff3b0ecddbe68676a26
+COPY --from=build --chown=node:node /app/packages/data-provider/dist ./packages/data-provider/dist
+COPY --from=build --chown=node:node /app/packages/data-schemas/dist ./packages/data-schemas/dist
+COPY --from=build --chown=node:node /app/packages/api/dist ./packages/api/dist
+COPY --chown=node:node api/server/middleware/config/app.js ./api/server/middleware/config/app.js
+COPY --chown=node:node api/server/routes/models.js ./api/server/routes/models.js
+COPY --chown=node:node api/strategies/openidStrategy.js ./api/strategies/openidStrategy.js
+ARG BUILD_COMMIT
+ARG IMAGE_VERSION
+ARG BUILD_DATE
+LABEL org.opencontainers.image.revision=$BUILD_COMMIT \
+      org.opencontainers.image.version=$IMAGE_VERSION
+ENV BUILD_COMMIT=$BUILD_COMMIT BUILD_BRANCH=main BUILD_DATE=$BUILD_DATE

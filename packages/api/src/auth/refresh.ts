@@ -11,6 +11,7 @@ import {
   getIssuerBoundConditions,
 } from '~/auth/openid';
 import { serializeUserForExchange } from '~/auth/exchange';
+import { isEnabled } from '~/utils/common';
 
 const SAFE_USER_PROJECTION = '-password -__v -totpSecret -backupCodes';
 
@@ -32,6 +33,28 @@ export interface RefreshTokenset {
 export interface OpenIDRefreshParams {
   scope?: string;
   audience?: string;
+  resource?: string;
+}
+
+/** Resource indicators must accompany both the authorization and token grants. */
+export function applyOpenIDResource(params: URLSearchParams): URLSearchParams {
+  if (process.env.OPENID_RESOURCE) {
+    params.set('resource', process.env.OPENID_RESOURCE);
+  }
+  return params;
+}
+
+export function applyOpenIDAccountPrompt(params: URLSearchParams): URLSearchParams {
+  if (isEnabled(process.env.OPENID_SELECT_ACCOUNT)) {
+    // Logto does not implement select_account. The standard login prompt also
+    // requires interaction when an existing identity-provider session is active.
+    params.set('prompt', 'login select_account');
+  }
+  return params;
+}
+
+export function buildOpenIDCodeGrantParams(params: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(applyOpenIDResource(new URLSearchParams(params)));
 }
 
 export interface MintedToken {
@@ -135,6 +158,10 @@ export function buildOpenIDRefreshParams(): OpenIDRefreshParams {
 
   if (process.env.OPENID_REFRESH_AUDIENCE) {
     params.audience = process.env.OPENID_REFRESH_AUDIENCE;
+  }
+
+  if (process.env.OPENID_RESOURCE) {
+    params.resource = process.env.OPENID_RESOURCE;
   }
 
   return params;

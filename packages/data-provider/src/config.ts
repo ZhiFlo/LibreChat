@@ -1751,7 +1751,7 @@ export const endpointSchema = baseEndpointSchema.merge(
       .regex(/^[-a-zA-Z0-9_.]+$/, 'must be a valid tenant id without whitespace')
       .refine((tenantId) => tenantId !== '__SYSTEM__', 'system tenant is not allowed')
       .optional(),
-    apiKey: z.string(),
+    apiKey: z.string().default(''),
     /** Masked preview of the API key, stored at write time so admin
      * reads can show which key is configured without returning the secret. */
     apiKeyPreview: z.string().optional(),
@@ -1772,6 +1772,17 @@ export const endpointSchema = baseEndpointSchema.merge(
      */
     provider: z.literal(EModelEndpoint.anthropic).optional(),
     headers: z.record(z.string()).optional(),
+    /** Discover this account's routing groups and expose each in the model menu. */
+    modelGroups: z
+      .object({
+        path: z.string().regex(/^[a-zA-Z0-9_/-]+$/),
+        header: z
+          .string()
+          .regex(/^[a-zA-Z0-9-]+$/)
+          .default('X-ZhiFlo-Group'),
+        timeoutMs: z.number().int().min(1).max(60_000).default(5_000),
+      })
+      .optional(),
     addParams: addParamsSchema.optional(),
     dropParams: z.array(z.string()).optional(),
     customParams: z

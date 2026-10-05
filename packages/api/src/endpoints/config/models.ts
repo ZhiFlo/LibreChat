@@ -4,6 +4,7 @@ import {
   ErrorTypes,
   EModelEndpoint,
   extractEnvVariable,
+  hasOpenIDAuthorizationHeader,
   normalizeEndpointName,
 } from 'librechat-data-provider';
 import type { TModelsConfig, TEndpoint } from 'librechat-data-provider';
@@ -84,7 +85,10 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
     const customEndpoints = (appConfig.endpoints[EModelEndpoint.custom] as TEndpoint[]).filter(
       (endpoint) =>
         endpoint.baseURL &&
-        endpoint.apiKey &&
+        (endpoint.apiKey ||
+          (endpoint.provider == null &&
+            endpoint.baseURL !== 'user_provided' &&
+            hasOpenIDAuthorizationHeader(endpoint.headers))) &&
         endpoint.name &&
         endpoint.models &&
         (endpoint.models.fetch || endpoint.models.default),
@@ -108,7 +112,9 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
       endpointsMap[name] = endpoint;
       modelsConfig[name] = [];
 
-      const resolvedApiKey = resolveConfigSecret(apiKey) ?? '';
+      const resolvedApiKey =
+        resolveConfigSecret(apiKey) ||
+        (hasOpenIDAuthorizationHeader(endpoint.headers) ? 'librechat-openid-header-auth' : '');
       const resolvedBaseURL = extractEnvVariable(baseURL);
       const entry: ResolvedEndpoint = {
         name,

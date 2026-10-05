@@ -20,6 +20,7 @@ const SUB = 'idp-sub-12345';
 const ORIGINAL_OPENID_SCOPE = process.env.OPENID_SCOPE;
 const ORIGINAL_OPENID_REFRESH_AUDIENCE = process.env.OPENID_REFRESH_AUDIENCE;
 const ORIGINAL_OPENID_ISSUER = process.env.OPENID_ISSUER;
+const ORIGINAL_OPENID_RESOURCE = process.env.OPENID_RESOURCE;
 
 function makeUser(overrides: Partial<IUser> = {}): IUser {
   const _id = overrides._id ?? new Types.ObjectId();
@@ -62,9 +63,15 @@ describe('buildOpenIDRefreshParams', () => {
   beforeEach(() => {
     delete process.env.OPENID_SCOPE;
     delete process.env.OPENID_REFRESH_AUDIENCE;
+    delete process.env.OPENID_RESOURCE;
   });
 
   afterAll(() => {
+    if (ORIGINAL_OPENID_RESOURCE === undefined) {
+      delete process.env.OPENID_RESOURCE;
+    } else {
+      process.env.OPENID_RESOURCE = ORIGINAL_OPENID_RESOURCE;
+    }
     if (ORIGINAL_OPENID_SCOPE === undefined) {
       delete process.env.OPENID_SCOPE;
     } else {
@@ -114,6 +121,15 @@ describe('buildOpenIDRefreshParams', () => {
 
   it('returns no params when scope and refresh audience are unset', () => {
     expect(buildOpenIDRefreshParams()).toEqual({});
+  });
+
+  it('keeps the API resource audience when refreshing a federated login', () => {
+    process.env.OPENID_RESOURCE = 'https://api.zhiflo.com';
+    process.env.OPENID_SCOPE = 'openid offline_access zhiflo:api';
+    expect(buildOpenIDRefreshParams()).toEqual({
+      scope: 'openid offline_access zhiflo:api',
+      resource: 'https://api.zhiflo.com',
+    });
   });
 });
 
