@@ -1,9 +1,10 @@
+import { createHash } from 'crypto';
 import { logger } from '@librechat/data-schemas';
 import { ErrorTypes } from 'librechat-data-provider';
 import type { IUser, UserMethods } from '@librechat/data-schemas';
 import type { FilterQuery } from 'mongoose';
-import { isMetricsConfigured, recordOpenIDUserLookup } from '~/app/metrics';
 import type { OpenIDUserLookupResult } from '~/app/metrics';
+import { isMetricsConfigured, recordOpenIDUserLookup } from '~/app/metrics';
 
 export type OpenIdEmailClaims = {
   email?: unknown;
@@ -195,11 +196,21 @@ export function getOpenIdEmail(
     }
   }
 
-  return (
+  const email =
     getStringClaim(claims, 'email') ??
     getStringClaim(claims, 'preferred_username') ??
-    getStringClaim(claims, 'upn')
-  );
+    getStringClaim(claims, 'upn');
+  if (!process.env.OPENID_RESOURCE || (email && /\S+@\S+\.\S+/.test(email))) return email;
+
+  const issuer = getStringClaim(claims, 'iss');
+  const subject = getStringClaim(claims, 'sub');
+  if (!issuer || !subject) return email;
+  // The user schema requires an email even for username-only API identities.
+  // Reserved .invalid addresses cannot deliver mail or match a real account.
+  const identity = createHash('sha256')
+    .update(JSON.stringify([normalizeOpenIdIssuer(issuer), subject]))
+    .digest('hex');
+  return `openid-${identity}@identity.invalid`;
 }
 
 /**

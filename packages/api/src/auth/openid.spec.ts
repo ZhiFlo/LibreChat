@@ -1,12 +1,12 @@
 import mongoose, { Types } from 'mongoose';
+import { ErrorTypes } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { logger, createMethods, createModels } from '@librechat/data-schemas';
-import { ErrorTypes } from 'librechat-data-provider';
 import type { IUser, UserMethods } from '@librechat/data-schemas';
 import type { CommandStartedEvent } from 'mongodb';
 import type { FilterQuery } from 'mongoose';
-import { recordOpenIDUserLookup } from '~/app/metrics';
 import { findOpenIDUser, getOpenIdEmail, getOpenIdIssuer, normalizeOpenIdIssuer } from './openid';
+import { recordOpenIDUserLookup } from '~/app/metrics';
 
 function newId() {
   return new Types.ObjectId();
@@ -921,13 +921,17 @@ describe('findOpenIDUser Mongo compatibility', () => {
 
 describe('getOpenIdEmail', () => {
   const originalEmailClaim = process.env.OPENID_EMAIL_CLAIM;
+  const originalResource = process.env.OPENID_RESOURCE;
 
   beforeEach(() => {
     jest.clearAllMocks();
     delete process.env.OPENID_EMAIL_CLAIM;
+    delete process.env.OPENID_RESOURCE;
   });
 
   afterAll(() => {
+    if (originalResource == null) delete process.env.OPENID_RESOURCE;
+    else process.env.OPENID_RESOURCE = originalResource;
     if (originalEmailClaim == null) {
       delete process.env.OPENID_EMAIL_CLAIM;
       return;
@@ -947,6 +951,21 @@ describe('getOpenIdEmail', () => {
 
   it('returns undefined when default claims are absent', () => {
     expect(getOpenIdEmail({})).toBeUndefined();
+  });
+
+  it('keeps username-only resource identities distinct by issuer and subject', () => {
+    process.env.OPENID_RESOURCE = 'https://api.zhiflo.com';
+    const claims = {
+      iss: 'https://account.zhiflo.com/oidc',
+      sub: 'one',
+      preferred_username: 'same-name',
+    };
+    const email = getOpenIdEmail(claims);
+    expect(email).toMatch(/^openid-[a-f0-9]{64}@identity\.invalid$/);
+    expect(getOpenIdEmail({ ...claims, iss: claims.iss + '/' })).toBe(email);
+    expect(getOpenIdEmail({ ...claims, sub: 'two' })).not.toBe(email);
+    expect(getOpenIdEmail({ ...claims, iss: 'https://another.example/oidc' })).not.toBe(email);
+    expect(getOpenIdEmail({ ...claims, email: 'user@example.com' })).toBe('user@example.com');
   });
 
   it('skips empty fallback claims', () => {
