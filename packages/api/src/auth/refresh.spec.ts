@@ -182,7 +182,6 @@ describe('buildOpenIDRefreshParams', () => {
     process.env.OPENID_RESOURCE = 'https://api.zhiflo.com';
     process.env.OPENID_SCOPE = 'openid offline_access zhiflo:api';
     expect(buildOpenIDRefreshParams()).toEqual({
-      scope: 'openid offline_access zhiflo:api',
       resource: 'https://api.zhiflo.com',
     });
   });

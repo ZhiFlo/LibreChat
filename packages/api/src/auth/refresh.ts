@@ -176,7 +176,7 @@ export class AdminRefreshError extends Error {
 export function buildOpenIDRefreshParams(): OpenIDRefreshParams {
   const params: OpenIDRefreshParams = {};
 
-  if (process.env.OPENID_SCOPE) {
+  if (process.env.OPENID_SCOPE && !process.env.OPENID_RESOURCE) {
     params.scope = process.env.OPENID_SCOPE;
   }
 
