@@ -61,13 +61,11 @@ export function buildOpenIDCodeGrantParams(params: Record<string, string>): Reco
 export async function fetchOpenIDProfile({
   tokenset,
   resource,
-  scope,
   refreshTokenGrant,
   fetchUserInfo,
 }: {
   tokenset: { access_token: string; refresh_token?: string };
   resource?: string;
-  scope?: string;
   refreshTokenGrant: (
     refreshToken: string,
     params: Record<string, string>,
@@ -77,7 +75,7 @@ export async function fetchOpenIDProfile({
   if (!resource) return fetchUserInfo(tokenset.access_token);
   if (!tokenset.refresh_token) throw new Error('OpenID profile refresh token is missing');
 
-  const profileTokens = await refreshTokenGrant(tokenset.refresh_token, scope ? { scope } : {});
+  const profileTokens = await refreshTokenGrant(tokenset.refresh_token, {});
   // Keep the resource access token and persist refresh-token rotation for the session.
   if (profileTokens.refresh_token) tokenset.refresh_token = profileTokens.refresh_token;
   return fetchUserInfo(profileTokens.access_token);

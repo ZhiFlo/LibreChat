@@ -23,14 +23,11 @@ describe('fetchOpenIDProfile', () => {
       await fetchOpenIDProfile({
         tokenset,
         resource: 'https://api.zhiflo.com',
-        scope: 'openid profile email',
         refreshTokenGrant,
         fetchUserInfo,
       }),
     ).toEqual({ sub: SUB, email: 'user@example.com' });
-    expect(refreshTokenGrant).toHaveBeenCalledWith('original-refresh', {
-      scope: 'openid profile email',
-    });
+    expect(refreshTokenGrant).toHaveBeenCalledWith('original-refresh', {});
     expect(fetchUserInfo).toHaveBeenCalledWith('profile-token');
     expect(tokenset).toEqual({ access_token: 'api-token', refresh_token: 'rotated-refresh' });
   });

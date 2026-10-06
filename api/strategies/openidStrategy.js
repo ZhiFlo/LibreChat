@@ -209,7 +209,6 @@ const getUserInfo = async (config, tokenset, sub) => {
     return await fetchOpenIDProfile({
       tokenset,
       resource: process.env.OPENID_RESOURCE,
-      scope: process.env.OPENID_SCOPE,
       refreshTokenGrant: (refreshToken, params) =>
         client.refreshTokenGrant(config, refreshToken, params),
       fetchUserInfo: async (accessToken) =>
