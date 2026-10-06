@@ -57,6 +57,32 @@ export function buildOpenIDCodeGrantParams(params: Record<string, string>): Reco
   return Object.fromEntries(applyOpenIDResource(new URLSearchParams(params)));
 }
 
+/** API resource tokens cannot authenticate an OIDC UserInfo request. */
+export async function fetchOpenIDProfile({
+  tokenset,
+  resource,
+  scope,
+  refreshTokenGrant,
+  fetchUserInfo,
+}: {
+  tokenset: { access_token: string; refresh_token?: string };
+  resource?: string;
+  scope?: string;
+  refreshTokenGrant: (
+    refreshToken: string,
+    params: Record<string, string>,
+  ) => Promise<{ access_token: string; refresh_token?: string }>;
+  fetchUserInfo: (accessToken: string) => Promise<Record<string, unknown>>;
+}): Promise<Record<string, unknown>> {
+  if (!resource) return fetchUserInfo(tokenset.access_token);
+  if (!tokenset.refresh_token) throw new Error('OpenID profile refresh token is missing');
+
+  const profileTokens = await refreshTokenGrant(tokenset.refresh_token, scope ? { scope } : {});
+  // Keep the resource access token and persist refresh-token rotation for the session.
+  if (profileTokens.refresh_token) tokenset.refresh_token = profileTokens.refresh_token;
+  return fetchUserInfo(profileTokens.access_token);
+}
+
 export interface MintedToken {
   /** Bearer the admin panel will send on subsequent requests. */
   token: string;

@@ -11,6 +11,7 @@ const {
   applyOpenIDResource,
   applyOpenIDAccountPrompt,
   buildOpenIDCodeGrantParams,
+  fetchOpenIDProfile,
   logHeaders,
   logOpenIdRequestBody,
   findOpenIDUser,
@@ -203,10 +204,21 @@ const exchangeAccessTokenIfNeeded = async (config, accessToken, sub, fromCache =
  * @param {string} sub - The subject identifier of the user. usually found as "sub" in the claims of the token
  * @returns {Promise<Object|null>}
  */
-const getUserInfo = async (config, accessToken, sub) => {
+const getUserInfo = async (config, tokenset, sub) => {
   try {
-    const exchangedAccessToken = await exchangeAccessTokenIfNeeded(config, accessToken, sub);
-    return await client.fetchUserInfo(config, exchangedAccessToken, sub);
+    return await fetchOpenIDProfile({
+      tokenset,
+      resource: process.env.OPENID_RESOURCE,
+      scope: process.env.OPENID_SCOPE,
+      refreshTokenGrant: (refreshToken, params) =>
+        client.refreshTokenGrant(config, refreshToken, params),
+      fetchUserInfo: async (accessToken) =>
+        client.fetchUserInfo(
+          config,
+          await exchangeAccessTokenIfNeeded(config, accessToken, sub),
+          sub,
+        ),
+    });
   } catch (error) {
     logger.error('[openidStrategy] getUserInfo: Error fetching user info:', error);
     return null;
@@ -572,7 +584,7 @@ async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
   };
 
   if (tokenset.access_token) {
-    const providerUserinfo = await getUserInfo(openidConfig, tokenset.access_token, claims.sub);
+    const providerUserinfo = await getUserInfo(openidConfig, tokenset, claims.sub);
     Object.assign(userinfo, providerUserinfo);
   }
 

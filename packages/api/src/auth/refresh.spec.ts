@@ -4,7 +4,65 @@ import { logger } from '@librechat/data-schemas';
 import type { IUser } from '@librechat/data-schemas';
 import type { AdminRefreshDeps, RefreshTokenset } from './refresh';
 
-import { applyAdminRefresh, AdminRefreshError, buildOpenIDRefreshParams } from './refresh';
+import {
+  applyAdminRefresh,
+  AdminRefreshError,
+  buildOpenIDRefreshParams,
+  fetchOpenIDProfile,
+} from './refresh';
+
+describe('fetchOpenIDProfile', () => {
+  it('gets a separate profile token and preserves the API token with rotated refresh credentials', async () => {
+    const tokenset = { access_token: 'api-token', refresh_token: 'original-refresh' };
+    const refreshTokenGrant = jest.fn().mockResolvedValue({
+      access_token: 'profile-token',
+      refresh_token: 'rotated-refresh',
+    });
+    const fetchUserInfo = jest.fn().mockResolvedValue({ sub: SUB, email: 'user@example.com' });
+    expect(
+      await fetchOpenIDProfile({
+        tokenset,
+        resource: 'https://api.zhiflo.com',
+        scope: 'openid profile email',
+        refreshTokenGrant,
+        fetchUserInfo,
+      }),
+    ).toEqual({ sub: SUB, email: 'user@example.com' });
+    expect(refreshTokenGrant).toHaveBeenCalledWith('original-refresh', {
+      scope: 'openid profile email',
+    });
+    expect(fetchUserInfo).toHaveBeenCalledWith('profile-token');
+    expect(tokenset).toEqual({ access_token: 'api-token', refresh_token: 'rotated-refresh' });
+  });
+
+  it('keeps ordinary OIDC providers on their existing access token', async () => {
+    const refreshTokenGrant = jest.fn();
+    const fetchUserInfo = jest.fn().mockResolvedValue({ sub: SUB });
+    await fetchOpenIDProfile({
+      tokenset: { access_token: 'ordinary-token' },
+      refreshTokenGrant,
+      fetchUserInfo,
+    });
+    expect(refreshTokenGrant).not.toHaveBeenCalled();
+    expect(fetchUserInfo).toHaveBeenCalledWith('ordinary-token');
+  });
+
+  it('rejects missing refresh credentials and propagates profile failures', async () => {
+    const refreshTokenGrant = jest.fn().mockRejectedValue(new Error('profile unavailable'));
+    const fetchUserInfo = jest.fn();
+    const options = { resource: 'https://api.zhiflo.com', refreshTokenGrant, fetchUserInfo };
+    await expect(
+      fetchOpenIDProfile({ ...options, tokenset: { access_token: 'api-token' } }),
+    ).rejects.toThrow('refresh token is missing');
+    await expect(
+      fetchOpenIDProfile({
+        ...options,
+        tokenset: { access_token: 'api-token', refresh_token: 'refresh' },
+      }),
+    ).rejects.toThrow('profile unavailable');
+    expect(fetchUserInfo).not.toHaveBeenCalled();
+  });
+});
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
